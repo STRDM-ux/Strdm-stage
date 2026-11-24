@@ -40,7 +40,7 @@ enum RemoteWebApp {
   #side { display:flex; flex-direction:column; }
   #main { display:flex; flex-direction:column; flex:1; min-height:0; }
   header { display:flex; align-items:center; gap:8px; padding:10px 2px 8px; }
-  .brand { font-weight:900; font-size:15px; letter-spacing:.14em; background:linear-gradient(90deg,var(--pink),#b04bff); -webkit-background-clip:text; color:transparent; }
+  .brand { font-weight:900; font-size:15px; letter-spacing:.14em; background:linear-gradient(90deg,#ff3d81,#00e5ff); -webkit-background-clip:text; color:transparent; }
   header .title { font-weight:700; font-size:14px; flex:1; color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   header .clock { font-variant-numeric:tabular-nums; color:var(--dim); font-size:14px; }
   .dot { width:9px; height:9px; border-radius:50%; background:var(--red); flex:none; }
@@ -145,7 +145,7 @@ enum RemoteWebApp {
 <body>
 <div id="app">
   <div id="side">
-    <header><div class="dot" id="conn"></div><div class="brand">STRDM LIVE</div><div class="title" id="show"></div><div class="clock" id="clock"></div></header>
+    <header><div class="dot" id="conn"></div><img src="/brand.png" alt="" style="width:26px;height:26px;border-radius:7px"><div class="brand">STRDM LIVE</div><div class="title" id="show"></div><div class="clock" id="clock"></div></header>
     <div class="card standby">
       <div class="label"><span>STANDBY</span><span id="sfxPill"></span></div>
       <div class="cue"><span class="num" id="sbNum">–</span><span id="sbName">Connecting…</span></div>
@@ -180,6 +180,7 @@ enum RemoteWebApp {
 <div class="sheet-bg" id="sheetBg"><div class="sheet" id="sheet"></div></div>
 
 <div id="pin">
+  <img src="/brand.png" alt="" style="width:120px;height:120px;border-radius:28px;box-shadow:0 0 36px rgba(0,229,255,.4)">
   <div class="brand" style="font-size:34px">STRDM LIVE</div>
   <div class="muted">Enter the 4-digit PIN shown on the Mac in <b>Control &amp; Log → Phone Remote</b>, or scan the QR code there.</div>
   <input id="pinInput" inputmode="numeric" maxlength="4" autocomplete="one-time-code">

@@ -317,6 +317,8 @@ struct LightShow: Codable, Identifiable, Hashable, Sendable {
     var fadeOutAtEnd: Double = 4
     /// Original music video, when the song was analysed from a video file.
     var videoPath: String? = nil
+    /// Master light level 0…1, 4 values per second (Studio show mixes).
+    var intensityCurve: [Double]? = nil
 }
 
 // MARK: - Look generator

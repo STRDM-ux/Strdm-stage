@@ -10,6 +10,8 @@ struct DAWProject: Codable, Equatable {
     var bpm: Double = 98
     var beatsPerBar: Int = 4
     var tracks: [DAWTrack] = []
+    /// Set when this session is a Show Mix built from the cue list (songs, transitions, light level).
+    var mix: ShowMix? = nil
     var buses: [DAWBus] = [DAWBus(name: "Reverb Bus", effects: [EffectSlot.stock(.reverb)]),
                            DAWBus(name: "Delay Bus", effects: [EffectSlot.stock(.delay)])]
     var master = MasterSettings()
@@ -151,6 +153,17 @@ struct DAWTrack: Codable, Equatable, Identifiable {
     var padSamples: [Int: String] = [:]    // drum machine: MIDI note → custom sample path
     var inputChannel: Int = 0              // recording input (0 = input 1)
     var monitor = false
+    /// Earlier takes recorded over the same spot (Pro Tools-style playlists) — swap them in from the clip menu.
+    var takes: [AudioClip]? = nil
+}
+
+/// Ready-made vocal tracks, like Pro Tools track presets.
+enum VocalTrackPreset: String, CaseIterable, Identifiable {
+    case lead = "Lead Vocal", adlibs = "Ad-libs", hype = "Hype / Host", bgv = "Backing Vocals"
+    var id: String { rawValue }
+    var symbol: String {
+        switch self { case .lead: return "music.mic"; case .adlibs: return "bubble.left.and.bubble.right.fill"; case .hype: return "megaphone.fill"; case .bgv: return "person.3.fill" }
+    }
 }
 
 struct AudioClip: Codable, Equatable, Identifiable {

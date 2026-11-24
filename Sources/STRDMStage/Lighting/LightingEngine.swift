@@ -16,7 +16,7 @@ final class LightingEngine: ObservableObject {
 
     // Song light shows (Light Set Builder) — see LightingEngine+SongShow.swift
     struct SongRun {
-        let show: LightShow
+        var show: LightShow
         let start: Date
         let offset: Double
         let instanceID: UUID
@@ -33,6 +33,12 @@ final class LightingEngine: ObservableObject {
     // Live stage map: performer positions (metres) and moving-head follow
     @Published var performerPositions: [UUID: CGPoint] = [:]
     @Published var followTargetID: UUID? = nil
+    /// Movement choreography for every moving head (3D Wave, Sym Fan…). Overrides follow while running.
+    @Published var choreo: MoverChoreo? = nil
+    @Published var choreoSpeed: Double = 1
+    @Published var choreoSize: Double = 1
+    /// Open the movers' dimmers while a choreography runs, so the movement reads even in a dark look.
+    @Published var choreoLightsUp = true
     @Published var followFixtures: Set<UUID> = []
     var defaultPositions: [UUID: SIMD3<Double>] = [:]
 
@@ -247,6 +253,7 @@ final class LightingEngine: ObservableObject {
         }
         if songRun != nil { applySongShow() }
         applyFollow()
+        applyChoreography()
         let setup = store.show.lighting
         guard setup.outputEnabled else { return }
         output.send(universes: buildUniverses(), setup: setup)

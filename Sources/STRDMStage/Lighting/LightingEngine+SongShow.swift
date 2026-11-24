@@ -111,7 +111,7 @@ extension LightingEngine {
         (pan * 540 - 270, tilt * 270 - 135)
     }
 
-    private func write(pan: Double, tilt: Double, into values: inout [Double], for f: Fixture) {
+    func write(pan: Double, tilt: Double, into values: inout [Double], for f: Fixture) {
         let p16 = pan * 65535, t16 = tilt * 65535
         for (i, ch) in f.profile.channels.enumerated() where i < values.count {
             switch ch.kind {
@@ -198,6 +198,12 @@ extension LightingEngine {
 
     var songShowInstanceID: UUID? { songRun?.instanceID }
 
+    /// Live mode grows its show while it runs (new beats, hits and sections).
+    func updateLiveShow(_ show: LightShow, instanceID: UUID) {
+        guard songRun?.instanceID == instanceID else { return }
+        songRun?.show = show
+    }
+
     func applySongShow() {
         guard var run = songRun else { return }
         let show = run.show
@@ -229,6 +235,7 @@ extension LightingEngine {
         if show.fadeOutAtEnd > 0 && t > a.duration - show.fadeOutAtEnd {
             master = clamp((a.duration - t) / show.fadeOutAtEnd)
         }
+        if let curve = show.intensityCurve, !curve.isEmpty { master *= clamp(SongAnalysis.curveValue(curve, at: t)) }
         // Short cross-fade between sections; drops with a strobe hit snap instantly.
         let blend = look.strobeBeats > 0 ? 1 : clamp(Date().timeIntervalSince(run.sectionChangedAt) / 0.6)
         let previous = run.previousLook

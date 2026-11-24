@@ -1,0 +1,147 @@
+import Foundation
+
+/// The audience page: every phone in the crowd becomes part of the light show.
+enum CrowdWebApp {
+    static let html = ##"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#000000">
+<title>STRDM Live</title>
+<style>
+  html,body { margin:0; height:100%; background:#000; overflow:hidden; font-family:-apple-system,BlinkMacSystemFont,sans-serif; color:#fff; }
+  #bg { position:fixed; inset:0; background:#000; }
+  #media { position:fixed; inset:0; display:none; }
+  #media img, #media video { width:100%; height:100%; object-fit:cover; }
+  #txt { position:fixed; inset:0; display:none; align-items:center; justify-content:center; text-align:center; padding:6vw;
+         font-weight:900; font-size:16vw; line-height:1.02; text-transform:uppercase; text-shadow:0 0 30px rgba(0,0,0,.5); word-break:break-word; }
+  #join { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px;
+          background:radial-gradient(circle at 50% 40%, #3a0a3a, #000 70%); z-index:5; text-align:center; padding:30px; }
+  .brand { font-weight:900; font-size:34px; letter-spacing:.16em; background:linear-gradient(90deg,#ff3d81,#00e5ff); -webkit-background-clip:text; color:transparent; }
+  #join .artist { font-size:20px; font-weight:800; opacity:.9; }
+  #join button { font-size:22px; font-weight:900; padding:18px 40px; border-radius:40px; border:none; color:#fff;
+                 background:linear-gradient(135deg,#ff1493,#7a00ff); box-shadow:0 10px 40px rgba(255,20,147,.5); }
+  #join .hint { font-size:14px; opacity:.65; max-width:320px; }
+  #logo { position:fixed; inset:0; display:none; align-items:center; justify-content:center; flex-direction:column; gap:8px; }
+  #status { position:fixed; bottom:calc(env(safe-area-inset-bottom) + 8px); left:0; right:0; text-align:center; font-size:11px; opacity:.35; }
+</style>
+</head>
+<body>
+<div id="bg"></div>
+<div id="media"></div>
+<div id="txt"></div>
+<div id="logo"><img src="/crowd/brand.png" alt="" style="width:120px;height:120px;border-radius:28px" onerror="this.remove()"><div class="brand">STRDM LIVE</div><div id="logoArtist" style="opacity:.7;font-weight:700"></div></div>
+<div id="join">
+  <img src="/crowd/brand.png" alt="" style="width:140px;height:140px;border-radius:32px;box-shadow:0 0 40px rgba(0,229,255,.45)" onerror="this.remove()">
+  <div class="brand">STRDM LIVE</div>
+  <div class="artist" id="artist"></div>
+  <button id="go">Join the light show</button>
+  <div class="hint">Turn your brightness all the way up, keep this page open and hold your phone up when the lights hit. 📱✨</div>
+</div>
+<div id="status"></div>
+<script>
+  const $ = id => document.getElementById(id);
+  let st = null, offset = 0, joined = false, mediaKey = "", seed = Math.random();
+  // Each phone gets its own position in the room so waves and sparkles move across the crowd.
+  const place = parseFloat(localStorage.getItem("strdmPlace") || Math.random().toFixed(4)); localStorage.setItem("strdmPlace", place);
+
+  async function poll() {
+    try {
+      const t0 = Date.now();
+      const r = await fetch("/crowd/state", { cache: "no-store" });
+      const s = await r.json();
+      const t1 = Date.now();
+      offset = offset * 0.8 + (s.serverMs - (t0 + t1) / 2) * 0.2;   // smoothed clock offset to the Mac
+      st = s;
+      $("artist").textContent = s.artist ? s.artist + " · live" : "";
+      $("logoArtist").textContent = s.artist || "";
+      $("status").textContent = "";
+      updateMedia();
+    } catch (e) { $("status").textContent = "reconnecting…"; }
+    setTimeout(poll, st && (st.mode === "follow") ? 200 : 450);
+  }
+
+  function hexRGB(h) { const n = parseInt((h || "#000").slice(1), 16); return [n >> 16 & 255, n >> 8 & 255, n & 255]; }
+  function rgb(c, k) { return "rgb(" + Math.round(c[0] * k) + "," + Math.round(c[1] * k) + "," + Math.round(c[2] * k) + ")"; }
+  function hsl(h, k) { return "hsl(" + (h % 360) + ",100%," + Math.round(50 * k) + "%)"; }
+
+  function updateMedia() {
+    const m = st && (st.mode === "image" || st.mode === "video") ? st.media : null;
+    const key = m ? m.url : "";
+    if (key === mediaKey) return;
+    mediaKey = key;
+    const box = $("media");
+    if (!m) { box.innerHTML = ""; return; }
+    box.innerHTML = m.kind === "video"
+      ? '<video src="' + m.url + '" muted autoplay loop playsinline webkit-playsinline></video>'
+      : '<img src="' + m.url + '">';
+    const v = box.querySelector("video"); if (v) v.play().catch(() => {});
+  }
+
+  function frame() {
+    requestAnimationFrame(frame);
+    if (!st || !joined) return;
+    const now = Date.now() + offset;
+    const beats = (now - st.beatEpoch) / 60000 * st.bpm;
+    const phase = beats - Math.floor(beats);
+    const cols = (st.colors && st.colors.length ? st.colors : ["#ffffff"]).map(hexRGB);
+    const bright = Math.max(0, Math.min(1, st.bright ?? 1));
+    let bg = "#000", showMedia = false, showText = false, showLogo = false;
+    switch (st.mode) {
+      case "off": showLogo = true; break;
+      case "follow": bg = rgb(hexRGB(st.follow), bright); break;
+      case "color": bg = rgb(cols[0], bright); break;
+      case "pulse": {
+        const b = beats * (st.speed || 1);
+        const c = cols[Math.floor(b) % cols.length];
+        bg = rgb(c, bright * Math.pow(1 - (b - Math.floor(b)), 2.2)); break;
+      }
+      case "strobe": {
+        const hz = Math.max(1, (st.speed || 1) * 8);
+        const on = ((now / 1000) * hz) % 1 < 0.35;
+        bg = on ? rgb(cols[0], bright) : "#000"; break;
+      }
+      case "rainbow": bg = hsl((now / 1000) * 60 * (st.speed || 1) + place * 360, bright); break;
+      case "sparkle": {
+        const step = Math.floor(beats * 2 * (st.speed || 1));
+        const r = Math.abs(Math.sin((step + 1) * 12.9898 + place * 78.233) * 43758.5453) % 1;
+        bg = r > 0.82 ? rgb(cols[step % cols.length], bright) : "#000"; break;
+      }
+      case "wave": {
+        const w = Math.sin((beats * (st.speed || 1) / 2 - place) * Math.PI * 2) * 0.5 + 0.5;
+        const i = Math.floor(beats / 8) % cols.length;
+        bg = rgb(cols[i], bright * w); break;
+      }
+      case "image": case "video": showMedia = true; break;
+      case "text": {
+        showText = true;
+        bg = rgb(cols[0], bright * 0.9);
+        $("txt").textContent = st.text || "";
+        $("txt").style.color = st.colors && st.colors[1] ? st.colors[1] : "#fff"; break;
+      }
+    }
+    $("bg").style.background = bg;
+    $("media").style.display = showMedia ? "block" : "none";
+    $("txt").style.display = showText ? "flex" : "none";
+    $("logo").style.display = showLogo ? "flex" : "none";
+  }
+
+  async function wake() { try { if ("wakeLock" in navigator) await navigator.wakeLock.request("screen"); } catch (e) {} }
+  $("go").onclick = async () => {
+    joined = true; $("join").style.display = "none";
+    try { await document.documentElement.requestFullscreen(); } catch (e) {}
+    wake();
+    const v = document.querySelector("video"); if (v) v.play().catch(() => {});
+  };
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") wake(); });
+  poll();
+  frame();
+</script>
+</body>
+</html>
+"""##
+}

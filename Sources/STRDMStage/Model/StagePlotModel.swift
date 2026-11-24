@@ -180,6 +180,8 @@ struct StageItem: Codable, Identifiable, Equatable, Hashable {
     /// Lift above the deck (e.g. a set piece on a riser). nil = 0.
     var elevation: Double? = nil
     var locked: Bool? = nil
+    /// LED walls: panel type, grid and processor setup (pixel map, power, weight).
+    var led: LEDWallSpec? = nil
 
     var topHeight: Double { height ?? kind.defaultHeight }
 }

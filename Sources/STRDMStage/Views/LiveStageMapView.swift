@@ -54,6 +54,7 @@ struct LiveStageMapView: View {
             }
             .padding(.horizontal, 14).padding(.vertical, 8)
             .background(Color(white: 0.08))
+            if wants3D { Viewer3DBar() }
             if isPopout && popoutLayout == 2 {
                 HSplitView {
                     StageMapCanvas(editRig: editRig)
@@ -97,6 +98,7 @@ private struct MapControls: View {
                 .help("Design, place and patch a rig that fits the stage design")
                 .sheet(isPresented: $showRig) { AutoRigSheet() }
             Divider().frame(height: 22)
+            LiveModeBar()
             GMControl(width: 170)
             Toggle("Blackout", isOn: $lighting.blackout).toggleStyle(.button).tint(.yellow)
         }

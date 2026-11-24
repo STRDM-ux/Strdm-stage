@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 
 /// Creates every engine once and wires them together (save hooks, MIDI/OSC → cue engine, keyboard GO).
 @MainActor
@@ -18,6 +19,8 @@ final class AppModel: ObservableObject {
     let daw: DAWEngine
     let sfx: SFXEngine
     let crew: CrewAgent
+    let crowd: CrowdController
+    let live: LiveMode
     @Published var section: AppSection? = .cues
     private var keyMonitor: Any?
 
@@ -35,15 +38,20 @@ final class AppModel: ObservableObject {
         self.midi = MIDIControl(store: store)
         self.osc = OSCControl()
         self.builder = LightSetBuilder(store: store, engine: engine, lighting: lighting)
-        self.remote = RemoteServer(store: store, engine: engine, lighting: lighting, audio: audio)
+        let remote = RemoteServer(store: store, engine: engine, lighting: lighting, audio: audio)
+        self.remote = remote
         self.visuals = VisualEngine(lighting: lighting, audio: audio)
         self.blender = BlenderBridge(store: store, lighting: lighting, screens: screens)
         self.daw = DAWEngine(store: store)
         self.sfx = SFXEngine(store: store)
         self.crew = CrewAgent(store: store, lighting: lighting, builder: self.builder, screens: screens)
+        self.crowd = CrowdController(lighting: lighting, store: store, cache: remote.crowdCache)
+        self.live = LiveMode(lighting: lighting, store: store)
         remote.screens = screens
         remote.visuals = visuals
         remote.crew = crew
+        remote.crowd = crowd
+        remote.live = live
         screens.visuals = visuals
         if let saved = store.show.titleSettings {
             visuals.title = saved
@@ -83,6 +91,7 @@ final class AppModel: ObservableObject {
         if store.show.control.oscEnabled { osc.start(port: store.show.control.oscPort) }
         if store.show.vocalRack.enabled, audio.micPermission == .authorized { audio.loadVocalRack() }
         installKeyboardShortcuts()
+        followStudioWithLights()
     }
 
     /// Reload engines after opening a different show file.
@@ -129,9 +138,66 @@ final class AppModel: ObservableObject {
     func addStudioExportToShow(_ url: URL, name: String) {
         var cue = Cue(kind: .audio, number: store.nextCueNumber(), name: name)
         cue.audioPath = url.path
+        // A Show Mix keeps the exact looks, transitions and light-level lane you built in the Studio.
+        if let mixShow = ShowMixer.lightShow(for: daw.project, store: store, songPath: url.path) {
+            store.show.lightShows.append(mixShow)
+            cue.lightShowID = mixShow.id
+            store.show.cues.append(cue)
+            engine.note("Show Mix exported to the cue list with its full light show: \(name)")
+            return
+        }
         store.show.cues.append(cue)
         builder.analyze(url: url, linkTo: cue.id)
         engine.note("Studio export added to cue list: \(name)")
+    }
+
+    // MARK: Show Mix (cue list → Studio)
+
+    private var studioLightsID = UUID()
+    private var cancellables = Set<AnyCancellable>()
+
+    /// Sends song cues to the Studio as one continuous, auto-mixed session with matching light transitions.
+    func sendCuesToStudio(_ ids: [UUID], overrides: [Int: MixTransition] = [:]) {
+        let chosen = ids.isEmpty ? store.show.cues.filter { $0.kind == .audio && $0.lightShowID != nil }.map(\.id) : ids
+        guard let project = ShowMixer.build(cueIDs: chosen, store: store, overrides: overrides) else {
+            engine.note("Nothing to mix — songs need a light show (analyse them in Light Set Builder first)")
+            return
+        }
+        if daw.isPlaying { daw.stop() }
+        daw.edit { $0 = project }
+        daw.seek(to: 0)
+        section = .studio
+        engine.note("Show Mix built in the Studio: \(project.mix?.songs.count ?? 0) songs, \(project.mix?.transitions.count ?? 0) transitions")
+    }
+
+    func changeTransition(_ index: Int, to kind: MixTransition) {
+        guard let mix = daw.project.mix else { return }
+        var overrides: [Int: MixTransition] = [:]
+        for (i, t) in mix.transitions.enumerated() where !t.auto { overrides[i] = t.kind }
+        overrides[index] = kind
+        sendCuesToStudio(mix.cueIDs, overrides: overrides)
+    }
+
+    func exportMixToShow() {
+        section = .studio
+        Task { await daw.exportToShow(name: daw.project.name, autoMaster: true) }
+    }
+
+    /// While the Studio plays a Show Mix, the rig plays its lights in sync.
+    private func followStudioWithLights() {
+        daw.$isPlaying.removeDuplicates().receive(on: RunLoop.main).sink { [weak self] playing in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if playing, self.daw.project.mix != nil,
+                   let show = ShowMixer.lightShow(for: self.daw.project, store: self.store) {
+                    self.studioLightsID = UUID()
+                    self.lighting.startSongShow(show, instanceID: self.studioLightsID, offset: self.daw.currentBeat() * self.daw.secondsPerBeat)
+                } else {
+                    self.lighting.stopSongShow(instanceID: self.studioLightsID)
+                }
+            }
+        }
+        .store(in: &cancellables)
     }
 
     /// Typing keyboard → notes in the Studio (A W S E D F T G Y H U J K, Z/X octave).
@@ -232,6 +298,8 @@ struct AppEnvironment: ViewModifier {
                 .environmentObject(model.daw)
                 .environmentObject(model.sfx)
                 .environmentObject(model.crew)
+                .environmentObject(model.crowd)
+                .environmentObject(model.live)
     }
 }
 

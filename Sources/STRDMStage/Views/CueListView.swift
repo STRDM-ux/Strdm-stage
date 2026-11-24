@@ -44,6 +44,7 @@ struct CueListView: View {
 
 private struct CueListToolbar: View {
     @EnvironmentObject var store: ShowStore
+    @EnvironmentObject var model: AppModel
     @EnvironmentObject var engine: ShowEngine
     @State private var showAuto = false
 
@@ -77,6 +78,8 @@ private struct CueListToolbar: View {
             }
             .disabled(engine.selectedCueID == nil)
 
+            Button { model.sendCuesToStudio([]) } label: { Label("Send to Studio", systemImage: "waveform.badge.plus") }
+                .help("Auto-mix every song cue into one continuous Studio session with transitions that match the lights — then tweak and see the changes")
             Button { showAuto = true } label: { Label("Full Auto Show…", systemImage: "sparkles.tv.fill") }
                 .tint(.purple)
                 .help("Upload songs — it builds the stage, rig and the whole show start to end")
