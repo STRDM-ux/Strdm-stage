@@ -284,7 +284,11 @@ final class AudioEngine: ObservableObject {
         meterTapsInstalled = true
         engine.mainMixerNode.installTap(onBus: 0, bufferSize: 2048, format: nil,
                                         block: Self.meterTap { [weak self] level in
-            Task { @MainActor in self?.outputLevel = level }
+            Task { @MainActor in
+                guard let self else { return }
+                let q: Float = level < 0.003 ? 0 : (level * 100).rounded() / 100
+                if q != self.outputLevel { self.outputLevel = q }
+            }
         })
     }
 
@@ -462,7 +466,11 @@ final class AudioEngine: ObservableObject {
 
         vocalIn.installTap(onBus: 0, bufferSize: 1024, format: nil,
                            block: Self.meterTap { [weak self] level in
-            Task { @MainActor in self?.vocalLevel = level }
+            Task { @MainActor in
+                guard let self else { return }
+                let q: Float = level < 0.003 ? 0 : (level * 100).rounded() / 100
+                if q != self.vocalLevel { self.vocalLevel = q }
+            }
         })
         vocalWired = true
         startEngine()

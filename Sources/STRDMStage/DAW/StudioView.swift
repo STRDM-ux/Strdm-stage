@@ -4,13 +4,12 @@ import UniformTypeIdentifiers
 import AVFoundation
 
 enum StudioPanel: String, CaseIterable, Identifiable {
-    case editor = "Editor", mixer = "Mixer", vocals = "I/O & Vocals", devices = "Devices", export = "Export"
+    case editor = "Editor", mixer = "Mixer", devices = "Devices", export = "Export"
     var id: String { rawValue }
     var icon: String {
         switch self {
         case .editor: return "pianokeys"
         case .mixer: return "slider.vertical.3"
-        case .vocals: return "music.mic"
         case .devices: return "cable.connector"
         case .export: return "square.and.arrow.up"
         }
@@ -19,17 +18,56 @@ enum StudioPanel: String, CaseIterable, Identifiable {
 
 /// The Studio: arrangement on top, editor / mixer / devices / export below.
 struct StudioView: View {
+    enum Mode: String, CaseIterable, Identifiable {
+        case arrange = "Arrange & Mix", audio = "Audio & Vocals"
+        var id: String { rawValue }
+        var icon: String { self == .arrange ? "pianokeys.inverse" : "waveform.and.mic" }
+    }
+    var openAudio = false
     @EnvironmentObject var daw: DAWEngine
     @State private var panel: StudioPanel = .editor
     @State private var zoom: Double = 22   // pixels per beat
+    @AppStorage("STRDMStage.studioMode") private var mode: Mode = .arrange
 
     var body: some View {
         VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Picker("", selection: $mode) {
+                    ForEach(Mode.allCases) { m in Label(m.rawValue, systemImage: m.icon).tag(m) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 330)
+                .help("⌥⌘1 Arrange & Mix · ⌥⌘2 Audio & Vocals (interface, master EQ, live vocal rack)")
+                Button("") { mode = .arrange }.keyboardShortcut("1", modifiers: [.command, .option]).hidden().frame(width: 0)
+                Button("") { mode = .audio }.keyboardShortcut("2", modifiers: [.command, .option]).hidden().frame(width: 0)
+                Spacer()
+                if mode == .audio {
+                    Text("Live rack, interface and EQ are shared with the show — what you set here is what plays live.")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(Color(white: 0.07))
+            Divider()
             ScrollView(.horizontal, showsIndicators: false) {
                 StudioTransportBar(zoom: $zoom).fixedSize(horizontal: true, vertical: false)
             }
             .frame(maxWidth: .infinity)
             Divider()
+            if mode == .audio {
+                StudioVocalsPanel(onAdded: { mode = .arrange })
+            } else {
+                arrangeAndMix
+            }
+        }
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+        .clipped()
+        .background(Color(nsColor: .windowBackgroundColor))
+        .onAppear { if openAudio { mode = .audio } }
+    }
+
+    private var arrangeAndMix: some View {
             VSplitView {
                 ArrangementView(zoom: zoom, onOpenClip: { panel = .editor })
                     .frame(minHeight: 200, idealHeight: 340)
@@ -50,7 +88,6 @@ struct StudioView: View {
                         switch panel {
                         case .editor: ClipEditorPanel()
                         case .mixer: MixerPanel()
-                        case .vocals: StudioVocalsPanel()
                         case .devices: DevicesPanel()
                         case .export: ExportPanel()
                         }
@@ -59,10 +96,6 @@ struct StudioView: View {
                 }
                 .frame(minHeight: 220, idealHeight: 300)
             }
-        }
-        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-        .clipped()
-        .background(Color(nsColor: .windowBackgroundColor))
     }
 }
 
@@ -615,24 +648,29 @@ extension AudioEngine {
 
 /// Pro Tools-style I/O + vocal setup inside the Studio: interface, buffer, master EQ and the live vocal rack.
 struct StudioVocalsPanel: View {
+    var onAdded: () -> Void = {}
     @EnvironmentObject var daw: DAWEngine
     @EnvironmentObject var store: ShowStore
+    @State private var showPTImport = false
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Text("New vocal track:").font(.caption.weight(.semibold))
                 ForEach(VocalTrackPreset.allCases) { v in
-                    Button { daw.addVocalTrack(v, rack: store.show.vocalRack) } label: { Label(v.rawValue, systemImage: v.symbol) }
+                    Button { daw.addVocalTrack(v, rack: store.show.vocalRack); onAdded() } label: { Label(v.rawValue, systemImage: v.symbol) }
                         .controlSize(.small)
                 }
+                Button { showPTImport = true } label: { Label("Import chain from Pro Tools…", systemImage: "square.and.arrow.down.on.square") }
+                    .controlSize(.small).tint(.pink)
                 Spacer()
-                Text("Tracks open with your live rack (Auto-Tune…) first, then HPF / comp / EQ, armed and monitoring.")
+                Text("Opens in Arrange armed and monitoring, with your live rack (Auto-Tune…) then HPF / comp / EQ.")
                     .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
             }
             .padding(8)
             Divider()
             AudioView()
         }
+        .sheet(isPresented: $showPTImport) { ProToolsImportSheet() }
     }
 }

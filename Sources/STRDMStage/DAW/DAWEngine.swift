@@ -529,8 +529,11 @@ final class DAWEngine: ObservableObject {
             for k in d.keys { d[k] = (d[k] ?? 0) * 0.6 }
             return copy
         }
-        masterLevel = m[Self.masterMeterID] ?? 0
-        var trackLevels = m
+        // Only publish when a meter actually moves — every @Published write redraws every Studio view.
+        func q(_ v: Float) -> Float { v < 0.002 ? 0 : (v * 200).rounded() / 200 }
+        let master = q(m[Self.masterMeterID] ?? 0)
+        if master != masterLevel { masterLevel = master }
+        var trackLevels = m.mapValues(q)
         trackLevels[Self.masterMeterID] = nil
         if trackLevels != levels { levels = trackLevels }
         if isPlaying {

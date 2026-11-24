@@ -7,7 +7,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         switch self {
         case .cues: return "Cue List"
         case .crew: return "AI Crew"
-        case .studio: return "Studio"
+        case .studio: return "Studio & Vocals"
         case .liveMap: return "Live Stage Map"
         case .setBuilder: return "Light Set Builder"
         case .audio: return "Audio & Vocals"
@@ -43,7 +43,8 @@ struct ContentView: View {
 
     var body: some View {
         NavigationSplitView {
-            List(AppSection.allCases, selection: $model.section) { s in
+            // Audio & Vocals lives inside the Studio now (one place for tracks, mixing, vocals and I/O).
+            List(AppSection.allCases.filter { $0 != .audio }, selection: $model.section) { s in
                 Label(s.title, systemImage: s.symbol).tag(s)
             }
             .navigationSplitViewColumnWidth(min: 190, ideal: 210)
@@ -60,7 +61,7 @@ struct ContentView: View {
                     case .studio: StudioView()
                     case .liveMap: LiveStageMapView()
                     case .setBuilder: LightSetBuilderView()
-                    case .audio: AudioView()
+                    case .audio: StudioView(openAudio: true)
                     case .lighting: LightingView()
                     case .effects: EffectsView()
                     case .screens: ScreensView()
@@ -104,8 +105,6 @@ private struct ShowNameFooter: View {
 
 struct TransportBar: View {
     @EnvironmentObject var engine: ShowEngine
-    @EnvironmentObject var audio: AudioEngine
-    @EnvironmentObject var lighting: LightingEngine
 
     var body: some View {
         HStack(alignment: .center, spacing: 16) {
@@ -134,11 +133,8 @@ struct TransportBar: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 HStack(spacing: 8) {
-                    LevelMeter(level: audio.outputLevel).frame(width: 90, height: 8)
-                    Toggle("Blackout", isOn: $lighting.blackout)
-                        .toggleStyle(.button)
-                        .tint(.yellow)
-                        .controlSize(.small)
+                    TransportMeter()
+                    TransportBlackout()
                 }
             }
             ClockView()
@@ -289,5 +285,22 @@ struct BrandHeader: View {
             Spacer()
         }
         .padding(.horizontal, 14).padding(.vertical, 8)
+    }
+}
+
+
+/// Split out so 40 Hz lighting frames and audio meters only redraw these, not the whole transport bar.
+private struct TransportMeter: View {
+    @EnvironmentObject var audio: AudioEngine
+    var body: some View { LevelMeter(level: audio.outputLevel).frame(width: 90, height: 8) }
+}
+
+private struct TransportBlackout: View {
+    @EnvironmentObject var lighting: LightingEngine
+    var body: some View {
+        Toggle("Blackout", isOn: $lighting.blackout)
+            .toggleStyle(.button)
+            .tint(.yellow)
+            .controlSize(.small)
     }
 }

@@ -61,13 +61,19 @@ enum MoverChoreo: String, CaseIterable, Identifiable, Codable {
 }
 
 extension LightingEngine {
+    /// Beat position right now, smooth between beats (songStatus only updates once per beat).
+    var songBeatNow: Double? {
+        guard let run = songRun else { return nil }
+        let t = Date().timeIntervalSince(run.start) + run.offset
+        return max(0, run.show.analysis.beatPosition(t))
+    }
+
     /// Beat-synced when a song is running, otherwise 120 BPM.
     func applyChoreography() {
         guard let choreo else { return }
         let movers = fixtures.filter { role($0) == .mover }.sorted { position($0).x < position($1).x }
         guard !movers.isEmpty else { return }
-        let beats: Double
-        if let s = songStatus, s.bpm > 0 { beats = s.elapsed * s.bpm / 60 } else { beats = Date().timeIntervalSinceReferenceDate * 2 }
+        let beats = songBeatNow ?? Date().timeIntervalSinceReferenceDate * 2
         let ph = beats / choreo.periodBeats * 2 * .pi * choreoSpeed
         var next = live
         for (i, f) in movers.enumerated() {

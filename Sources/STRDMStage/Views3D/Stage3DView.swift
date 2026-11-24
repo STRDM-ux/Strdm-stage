@@ -49,13 +49,13 @@ struct Stage3DView: NSViewRepresentable {
         let view = SCNView(frame: .zero)
         view.allowsCameraControl = true
         view.backgroundColor = mode == .live ? .black : NSColor(white: 0.07, alpha: 1)
-        view.antialiasingMode = .multisampling4X
+        view.antialiasingMode = Viewer3DSettings.shared.quality.antialias
         view.preferredFramesPerSecond = 60
         context.coordinator.screens = screens
         context.coordinator.visuals = visuals
         context.coordinator.crowdCtl = crowdCtl
         view.delegate = context.coordinator.frames
-        view.rendersContinuously = mode == .live
+        view.rendersContinuously = mode == .live && Viewer3DSettings.shared.quality == .ultra
         Viewer3DSettings.shared.activeController = context.coordinator
         context.coordinator.attach(view: view, store: store, lighting: lighting)
         context.coordinator.apply(camera: camera, animated: false)
@@ -96,6 +96,8 @@ final class Stage3DController: NSObject {
     private var phoneMats: [SCNMaterial] = []
     private var droneAngle = 0.0
     private var lastDaylight: Bool?
+    private var appliedQuality: Viewer3DSettings.Quality?
+    private var lastVisualsGrab = 0.0
     private var visualsRenderer: SCNRenderer?
     private var wallMediaIDs: [Int: ObjectIdentifier] = [:]
     private var visualsFrame: (tick: Int, image: NSImage)?
@@ -125,6 +127,7 @@ final class Stage3DController: NSObject {
         let isMover: Bool
         let isEffect: Bool
         let isHaze: Bool
+        let lightNode: SCNNode
     }
 
     static let deckHeight = 1.2
@@ -167,7 +170,8 @@ final class Stage3DController: NSObject {
         scene.rootNode.addChildNode(strobe)
 
         rebuild()
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / (mode == .live ? 60.0 : 30.0), repeats: true) { [weak self] _ in
+        appliedQuality = settings.quality
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / (mode == .live ? settings.quality.tickRate : 20), repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
         if let t = timer { RunLoop.main.add(t, forMode: .common) }
@@ -209,8 +213,8 @@ final class Stage3DController: NSObject {
             c.fieldOfView = fov
             c.zNear = 0.05
             c.zFar = 400
-            c.wantsHDR = true
-            c.bloomIntensity = mode == .live ? 1.4 : 0.2
+            c.wantsHDR = settings.quality != .fast
+            c.bloomIntensity = mode == .live ? (settings.quality == .fast ? 0 : 1.4) : 0.2
             c.bloomThreshold = 0.55
             c.bloomBlurRadius = 10
             c.wantsExposureAdaptation = false
@@ -249,7 +253,7 @@ final class Stage3DController: NSObject {
         parts += s.stagePlot.items.map { "\($0.id)\($0.kind.rawValue)\($0.x),\($0.y),\($0.width),\($0.depth),\($0.rotation),\($0.label),\($0.height ?? -1),\($0.elevation ?? 0)" }
         parts.append("\(s.stagePlot.venueModelPath ?? "")\(s.stagePlot.venueModelScale ?? 1)\(s.stagePlot.venueModelOffsetY ?? 0)")
         parts += s.lighting.fixtures.map { "\($0.id)\($0.profile.name)\($0.stageX ?? -99),\($0.stageY ?? -99),\($0.stageZ ?? -99)" }
-        parts.append("\(settings.crowdSize.rawValue)\(settings.roof)")
+        parts.append("\(settings.crowdSize.rawValue)\(settings.roof)\(settings.quality.rawValue)")
         return parts.joined(separator: "|")
     }
 
@@ -604,7 +608,9 @@ final class Stage3DController: NSObject {
         light.attenuationFalloffExponent = 1
         light.intensity = 0
         light.castsShadow = false
+        light.categoryBitMask = 1          // lights the stage only — never the crowd (huge GPU saving)
         let lightNode = SCNNode(); lightNode.light = light
+        lightNode.isHidden = !settings.quality.fixtureLights
         pivot.addChildNode(lightNode)
         // Volumetric beam
         let cone = SCNCone(topRadius: 1, bottomRadius: 0.08, height: 5)
@@ -624,7 +630,7 @@ final class Stage3DController: NSObject {
         coneNode.isHidden = mode == .plot
         pivot.addChildNode(coneNode)
         return FixtureRig(pivot: pivot, light: light, cone: cone, coneNode: coneNode, beamMaterial: beam, lens: lens,
-                          isMover: isMover, isEffect: role == .effect, isHaze: role == .haze)
+                          isMover: isMover, isEffect: role == .effect, isHaze: role == .haze, lightNode: lightNode)
     }
 
     private func buildCrowd(width w: Double) {
@@ -640,10 +646,12 @@ final class Stage3DController: NSObject {
 
         let tones: [NSColor] = [NSColor(white: 0.14, alpha: 1), NSColor(white: 0.2, alpha: 1),
                                 NSColor(red: 0.2, green: 0.12, blue: 0.1, alpha: 1), NSColor(red: 0.1, green: 0.1, blue: 0.16, alpha: 1)]
-        let mats = tones.map { material($0, roughness: 0.8) }
+        let mats = tones.map { c -> SCNMaterial in let m = SCNMaterial(); m.lightingModel = .lambert; m.diffuse.contents = c; return m }
         let bodies = mats.map { m -> SCNGeometry in let g = SCNCapsule(capRadius: 0.2, height: 1.3); g.firstMaterial = m; return g }
         let head = SCNSphere(radius: 0.12)
-        head.firstMaterial = material(NSColor(red: 0.3, green: 0.2, blue: 0.16, alpha: 1), roughness: 0.6)
+        let headMat = SCNMaterial(); headMat.lightingModel = .lambert
+        headMat.diffuse.contents = NSColor(red: 0.3, green: 0.2, blue: 0.16, alpha: 1)
+        head.firstMaterial = headMat
         let phones = (0..<groups.count).map { g -> SCNGeometry in
             let p = SCNBox(width: 0.08, height: 0.15, length: 0.012, chamferRadius: 0.006)
             let m = emissive(NSColor(white: 0.9, alpha: 1), strength: 1.6)
@@ -683,6 +691,7 @@ final class Stage3DController: NSObject {
         phoneMats = []
         crowdGroups = groups.enumerated().map { g, node in
             let flat = node.flattenedClone()
+            flat.categoryBitMask = 2
             node.removeFromParentNode()
             crowdRoot.addChildNode(flat)
             var mats = flat.geometry?.materials ?? []
@@ -694,7 +703,10 @@ final class Stage3DController: NSObject {
 
     /// Box-section lattice truss (4 chords + zig-zag diagonals), along x — or y when vertical.
     private func latticeTruss(length: Double, vertical: Bool = false, size: CGFloat = 0.3) -> SCNNode {
-        let metal = material(NSColor(white: 0.62, alpha: 1), metalness: 0.9, roughness: 0.3)
+        let metal = SCNMaterial()
+        metal.lightingModel = .blinn
+        metal.diffuse.contents = NSColor(white: 0.55, alpha: 1)
+        metal.specular.contents = NSColor(white: 0.6, alpha: 1)
         let node = SCNNode()
         let L = CGFloat(length), half = size / 2
         for (a, b) in [(-half, -half), (-half, half), (half, -half), (half, half)] {
@@ -789,10 +801,11 @@ final class Stage3DController: NSObject {
     private func tick() {
         guard let store, let lighting else { return }
         tickCount += 1
-        if tickCount % 15 == 0 {
+        if tickCount % 30 == 0 {
             let sig = computeSignature()
             if sig != signature { rebuild() }
         }
+        if settings.quality != appliedQuality { applyQuality() }
         let w = store.show.stagePlot.stageWidth
         let d = store.show.stagePlot.stageDepth
         let deck = deckH
@@ -846,6 +859,8 @@ final class Stage3DController: NSObject {
             let color = NSColor(red: rgb.r, green: rgb.g, blue: rgb.b, alpha: 1)
             rig.light.color = color
             rig.light.intensity = CGFloat(level * (rig.isMover ? 5200 : 3600))
+            let lit = settings.quality.fixtureLights && level > 0.03
+            if rig.lightNode.isHidden == lit { rig.lightNode.isHidden = !lit }
             rig.beamMaterial.emission.contents = color
             rig.beamMaterial.transparency = CGFloat(level * (rig.isMover ? 0.32 : 0.16) * (0.55 + settings.haze * 1.1) * (settings.daylight ? 0.35 : 1))
             rig.lens.emission.contents = NSColor(red: rgb.r * level, green: rgb.g * level, blue: rgb.b * level, alpha: 1)
@@ -875,7 +890,7 @@ final class Stage3DController: NSObject {
 
         // Crowd phones show what STRDM Live is putting on the audience's phones right now.
         if !phoneMats.isEmpty {
-            let beat = lighting.songStatus.map { $0.bpm > 0 ? $0.elapsed * $0.bpm / 60 : 0 } ?? Date().timeIntervalSinceReferenceDate * 2
+            let beat = lighting.songBeatNow ?? Date().timeIntervalSinceReferenceDate * 2
             for (g, m) in phoneMats.enumerated() {
                 let c = settings.phoneLights ? (crowdCtl?.previewColor(beat: beat, seed: Double(g) / Double(phoneMats.count)) ?? RGB(r: 0.9, g: 0.9, b: 0.9)) : RGB(r: 0.03, g: 0.03, b: 0.04)
                 m.emission.contents = NSColor(red: c.r, green: c.g, blue: c.b, alpha: 1)
@@ -883,7 +898,7 @@ final class Stage3DController: NSObject {
         }
 
         // FPS readout + drone orbit
-        if settings.activeController === self, tickCount % (mode == .live ? 60 : 30) == 0 {
+        if settings.activeController === self, tickCount % Int(mode == .live ? settings.quality.tickRate : 20) == 0 {
             settings.fps = frames.take()
         }
         if appliedCamera == .drone, let cam = cameras[.drone], view?.pointOfView === cam {
@@ -895,8 +910,8 @@ final class Stage3DController: NSObject {
 
         // LED wall shows what the real screen shows: video, still, or the generated visuals.
         var beatPulse = 1.0
-        if let s = lighting.songStatus, s.bpm > 0 {
-            let phase = (s.elapsed * s.bpm / 60).truncatingRemainder(dividingBy: 1)
+        if let b = lighting.songBeatNow {
+            let phase = b.truncatingRemainder(dividingBy: 1)
             beatPulse = 0.65 + 0.35 * pow(1 - phase, 2)
         }
         for (i, wall) in ledWalls.enumerated() {
@@ -919,8 +934,7 @@ final class Stage3DController: NSObject {
         }
 
         // Crowd bounces on the beat when a song show is running
-        if let s = lighting.songStatus, s.bpm > 0, !crowdGroups.isEmpty {
-            let beat = s.elapsed * s.bpm / 60
+        if let s = lighting.songStatus, let beat = lighting.songBeatNow, !crowdGroups.isEmpty {
             let energy = s.section.lowercased().hasPrefix("drop") || s.section.lowercased().hasPrefix("chorus") ? 0.14 : 0.06
             for (i, g) in crowdGroups.enumerated() {
                 let phase = (beat + Double(i) * 0.12).truncatingRemainder(dividingBy: 1)
@@ -929,6 +943,25 @@ final class Stage3DController: NSObject {
         } else {
             crowdGroups.forEach { $0.position = SCNVector3Zero }
         }
+    }
+
+    /// Switch render quality live: anti-aliasing, frame rate, bloom and per-fixture lights.
+    private func applyQuality() {
+        let q = settings.quality
+        appliedQuality = q
+        guard let view else { return }
+        view.antialiasingMode = q.antialias
+        view.rendersContinuously = mode == .live && q == .ultra
+        for c in cameras.values {
+            c.camera?.wantsHDR = q != .fast
+            c.camera?.bloomIntensity = mode == .live ? (q == .fast ? 0 : 1.4) : 0.2
+        }
+        if !q.fixtureLights { fixtureRigs.values.forEach { $0.lightNode.isHidden = true } }
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / (mode == .live ? q.tickRate : 20), repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.tick() }
+        }
+        if let t = timer { RunLoop.main.add(t, forMode: .common) }
     }
 
     /// Unit beam direction (scene space) from a mover's live pan/tilt.
@@ -963,14 +996,16 @@ final class Stage3DController: NSObject {
         }
         if screens.visualsShowing(on: screenID) {
             // Render the generated visuals once per frame pair and share it across every wall showing them.
-            if let visuals, tickCount % 2 == 0, visualsFrame?.tick != tickCount {
+            let now = CACurrentMediaTime()
+            if let visuals, now - lastVisualsGrab > 1.0 / 12, visualsFrame?.tick != tickCount {
+                lastVisualsGrab = now
                 if visualsRenderer == nil {
                     visualsRenderer = SCNRenderer(device: MTLCreateSystemDefaultDevice(), options: nil)
                 }
                 if let r = visualsRenderer {
                     r.scene = visuals.scene
                     r.pointOfView = visuals.cameraNode
-                    visualsFrame = (tickCount, r.snapshot(atTime: CACurrentMediaTime(), with: CGSize(width: 640, height: 360), antialiasingMode: .none))
+                    visualsFrame = (tickCount, r.snapshot(atTime: now, with: CGSize(width: 480, height: 270), antialiasingMode: .none))
                 }
             }
             if let frame = visualsFrame {

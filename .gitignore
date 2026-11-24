@@ -3,5 +3,3 @@ dist/
 .swiftpm/
 *.xcodeproj
 DerivedData/
-node_modules/
-*.log

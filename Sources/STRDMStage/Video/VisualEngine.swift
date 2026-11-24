@@ -55,7 +55,7 @@ final class VisualEngine: ObservableObject {
         self.lighting = lighting
         self.audio = audio
         buildScene()
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
         if let t = timer { RunLoop.main.add(t, forMode: .common) }

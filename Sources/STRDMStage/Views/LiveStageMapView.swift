@@ -4,7 +4,6 @@ import SwiftUI
 struct LiveStageMapView: View {
     var isPopout = false
     @EnvironmentObject var store: ShowStore
-    @EnvironmentObject var lighting: LightingEngine
     @Environment(\.openWindow) private var openWindow
     @State private var editRig = false
     @AppStorage("STRDMStage.map3D") private var show3D = false
