@@ -67,6 +67,7 @@ private struct VocalRackView: View {
     @EnvironmentObject var audio: AudioEngine
     @State private var search = ""
     @State private var presetName = ""
+    @State private var showPTImport = false
 
     var body: some View {
         Form {
@@ -115,6 +116,10 @@ private struct VocalRackView: View {
                     PluginSlotRow(slot: slot, loaded: audio.loadedPluginIDs.contains(slot.id))
                 }
                 .onMove { audio.movePlugin(from: $0, to: $1) }
+                Button { showPTImport = true } label: {
+                    Label("Import vocal chain from a Pro Tools session…", systemImage: "square.and.arrow.down.on.square")
+                }
+                .help("Reads the inserts on your vocal track and vocal bus in a .ptx session and rebuilds them here")
                 PluginBrowser(search: $search)
             }
 
@@ -141,6 +146,7 @@ private struct VocalRackView: View {
             }
         }
         .formStyle(.grouped)
+        .sheet(isPresented: $showPTImport) { ProToolsImportSheet() }
     }
 }
 

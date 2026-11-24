@@ -33,6 +33,17 @@ final class Viewer3DSettings: ObservableObject {
     @Published var haze = UserDefaults.standard.object(forKey: "v3dHaze") as? Double ?? 0.35 {
         didSet { UserDefaults.standard.set(haze, forKey: "v3dHaze") }
     }
+    enum Quality: String, CaseIterable, Identifiable {
+        case fast, balanced, ultra
+        var id: String { rawValue }
+        var label: String { switch self { case .fast: return "Fast"; case .balanced: return "Balanced"; case .ultra: return "Ultra" } }
+        var antialias: SCNAntialiasingMode { switch self { case .fast: return .none; case .balanced: return .multisampling2X; case .ultra: return .multisampling4X } }
+        var tickRate: Double { self == .ultra ? 60 : 30 }
+        var fixtureLights: Bool { self != .fast }
+    }
+    @Published var quality: Quality = Quality(rawValue: UserDefaults.standard.string(forKey: "v3dQuality") ?? "") ?? .balanced {
+        didSet { UserDefaults.standard.set(quality.rawValue, forKey: "v3dQuality") }
+    }
     @Published var daylight = false
     @Published var phoneLights = true
     @Published var fps = 0
@@ -117,6 +128,11 @@ struct Viewer3DBar: View {
                 } label: { Label("Export 3D", systemImage: "square.and.arrow.up") }
                 .fixedSize()
 
+                Picker("", selection: $settings.quality) {
+                    ForEach(Viewer3DSettings.Quality.allCases) { Text($0.label).tag($0) }
+                }
+                .pickerStyle(.segmented).labelsHidden().frame(width: 190)
+                .help("Fast: no anti-aliasing, bloom or fixture lighting (laptops). Balanced: default. Ultra: 60 fps, 4× AA.")
                 Text("\(settings.fps) FPS")
                     .font(.caption.monospacedDigit().weight(.bold))
                     .foregroundStyle(settings.fps >= 50 ? .green : settings.fps >= 30 ? .yellow : .red)
