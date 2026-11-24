@@ -47,6 +47,7 @@ struct ContentView: View {
                 Label(s.title, systemImage: s.symbol).tag(s)
             }
             .navigationSplitViewColumnWidth(min: 190, ideal: 210)
+            .safeAreaInset(edge: .top) { BrandHeader() }
             .safeAreaInset(edge: .bottom) { ShowNameFooter() }
         } detail: {
             VStack(spacing: 0) {
@@ -267,4 +268,26 @@ func formatTime(_ seconds: Double) -> String {
     let s = Int(seconds.rounded(.down))
     let tenths = Int((seconds - Double(s)) * 10)
     return String(format: "%d:%02d.%d", s / 60, s % 60, max(0, min(9, tenths)))
+}
+
+
+/// STRDM Live logo at the top of the sidebar.
+struct BrandHeader: View {
+    var body: some View {
+        HStack(spacing: 10) {
+            if let img = NSImage(named: "BrandMark") {
+                Image(nsImage: img).resizable().interpolation(.high).frame(width: 34, height: 34)
+                    .clipShape(RoundedRectangle(cornerRadius: 9))
+                    .shadow(color: Color(red: 0, green: 0.9, blue: 1).opacity(0.5), radius: 6)
+            }
+            VStack(alignment: .leading, spacing: 0) {
+                Text("STRDM LIVE").font(.system(size: 13, weight: .black)).tracking(2)
+                    .foregroundStyle(LinearGradient(colors: [Color(red: 1, green: 0.24, blue: 0.51), Color(red: 0, green: 0.9, blue: 1)],
+                                                    startPoint: .leading, endPoint: .trailing))
+                Text("Stage").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 14).padding(.vertical, 8)
+    }
 }

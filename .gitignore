@@ -3,6 +3,5 @@ dist/
 .swiftpm/
 *.xcodeproj
 DerivedData/
-build.log
-.DS_Store
-Title Art/
+node_modules/
+*.log

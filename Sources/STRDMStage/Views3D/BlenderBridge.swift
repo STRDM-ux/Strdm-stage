@@ -180,6 +180,8 @@ final class BlenderBridge: ObservableObject {
         case .crowd: cam = ["pos": [-2, -(26 + w * 0.3), 2.4], "look": [0, d / 2, deck + 1.2], "lens": 40]
         case .artist: cam = ["pos": [0, d * 0.35, deck + 1.75], "look": [0, -14, 1.8], "lens": 22]
         case .top: cam = ["pos": [0, d / 2 - 0.01, max(w, d) * 1.6 + 6], "look": [0, d / 2, 0], "lens": 30]
+        case .frontRow: cam = ["pos": [1, -3.5, 1.7], "look": [0, d / 2, deck + 2], "lens": 20]
+        case .drone: cam = ["pos": [w * 0.8, -(10 + w * 0.4), 14], "look": [0, d / 2, deck + 1.2], "lens": 28]
         case .side: cam = ["pos": [w / 2 + 9, -6, 5], "look": [0, d / 2, deck + 1.2], "lens": 32]
         }
         var desc: [String: Any] = [

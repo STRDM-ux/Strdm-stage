@@ -667,7 +667,16 @@ final class DAWEngine: ObservableObject {
                 let clip = AudioClip(path: r.url.path, start: startBeat, length: lengthBeats, fileOffset: offset)
                 let tid = r.trackID
                 edit { p in
-                    if let i = p.tracks.firstIndex(where: { $0.id == tid }) { p.tracks[i].audioClips.append(clip) }
+                    guard let i = p.tracks.firstIndex(where: { $0.id == tid }) else { return }
+                    // Recording over existing audio keeps the old take (Pro Tools-style playlist) instead of layering.
+                    let end = clip.start + clip.length
+                    let covered = p.tracks[i].audioClips.filter { $0.start < end - 0.01 && $0.start + $0.length > clip.start + 0.01 }
+                    if !covered.isEmpty {
+                        p.tracks[i].takes = (p.tracks[i].takes ?? []) + covered
+                        let ids = Set(covered.map(\.id))
+                        p.tracks[i].audioClips.removeAll { ids.contains($0.id) }
+                    }
+                    p.tracks[i].audioClips.append(clip)
                 }
             }
             recorders.removeAll()

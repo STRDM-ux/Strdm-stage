@@ -35,11 +35,16 @@ final class RemoteServer: ObservableObject {
     weak var screens: ScreenManager?
     weak var visuals: VisualEngine?
     weak var crew: CrewAgent?
+    weak var crowd: CrowdController?
+    weak var live: LiveMode?
+    /// Audience phones are served straight from this cache, off the main thread.
+    nonisolated let crowdCache = CrowdCache()
     private var listener: NWListener?
     private var lastSeen: [String: Date] = [:]
     private var lastGo = Date.distantPast
     private var housekeeping: Timer?
-    private lazy var iconPNG: Data = Self.makeIcon()
+    private lazy var iconPNG: Data = Bundle.main.url(forResource: "touch-icon", withExtension: "png").flatMap { try? Data(contentsOf: $0) } ?? Self.makeIcon()
+    private lazy var brandPNG: Data? = Bundle.main.url(forResource: "BrandMark", withExtension: "png").flatMap { try? Data(contentsOf: $0) }
 
     private static let enabledKey = "STRDMStage.remote.enabled"
     private static let pinKey = "STRDMStage.remote.pin"
@@ -68,12 +73,17 @@ final class RemoteServer: ObservableObject {
             let params = NWParameters.tcp
             params.allowLocalEndpointReuse = true
             let l = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
-            l.service = NWListener.Service(name: "STRDM Stage Remote", type: "_http._tcp")
+            // Bonjour: the native STRDM Live iPhone/iPad app finds this Mac automatically.
+            l.service = NWListener.Service(name: Host.current().localizedName ?? "STRDM Stage", type: "_strdmlive._tcp")
             l.newConnectionHandler = { @Sendable [weak self] connection in
                 connection.start(queue: .global(qos: .userInteractive))
                 RemoteServer.readRequest(connection, buffer: Data()) { raw in
                     guard let raw, let request = HTTPRequest(raw: raw, connection: connection) else {
                         connection.cancel()
+                        return
+                    }
+                    if request.path.hasPrefix("/crowd"), let self, let reply = self.crowdCache.respond(request) {
+                        connection.send(content: reply, completion: .contentProcessed { _ in connection.cancel() })
                         return
                     }
                     Task { @MainActor in
@@ -139,9 +149,23 @@ final class RemoteServer: ObservableObject {
             return HTTPResponse(status: 200, contentType: "application/manifest+json", body: Data(RemoteWebApp.manifest.utf8)).data
         case ("GET", "/icon.png"), ("GET", "/apple-touch-icon.png"):
             return HTTPResponse(status: 200, contentType: "image/png", body: iconPNG, cache: true).data
+        case ("GET", "/brand.png"):
+            return HTTPResponse(status: 200, contentType: "image/png", body: brandPNG ?? iconPNG, cache: true).data
         case ("GET", "/api/state"):
             guard authorized(r) else { return HTTPResponse.text(401, "PIN required").data }
             return HTTPResponse.json(stateJSON())
+        case ("GET", "/api/crowd"):
+            guard authorized(r) else { return HTTPResponse.text(401, "PIN required").data }
+            return HTTPResponse.json(crowdJSON())
+        case ("POST", "/api/crowd"):
+            guard authorized(r) else { return HTTPResponse.text(401, "PIN required").data }
+            if let obj = try? JSONSerialization.jsonObject(with: r.body) as? [String: Any] { crowd?.perform(obj) }
+            return HTTPResponse.json(crowdJSON())
+        case ("POST", "/api/crowd/upload"):
+            guard authorized(r) else { return HTTPResponse.text(401, "PIN required").data }
+            guard !r.body.isEmpty, let crowd else { return HTTPResponse.text(400, "Empty upload").data }
+            if let m = crowd.addMedia(data: r.body, name: r.query["name"] ?? "upload.jpg"), r.query["show"] != "0" { crowd.show(m) }
+            return HTTPResponse.json(crowdJSON())
         case ("POST", "/api/action"):
             guard authorized(r) else { return HTTPResponse.text(401, "PIN required").data }
             perform(r.body)
@@ -208,6 +232,8 @@ final class RemoteServer: ObservableObject {
         // Effects — the phone can only make things SAFER (disarm / E-stop), never arm or fire.
         case "sfxDisarm": lighting.sfx?.disarmMaster(reason: "Disarmed from phone")
         // AI crew checklist
+        case "liveMode":
+            if let on = obj["on"] as? Bool { if on != (live?.running ?? false) { live?.toggle() } } else { live?.toggle() }
         case "crewCheck": crew?.runAudit()
         case "crewFixAll": crew?.runAudit(); crew?.fixAll()
         default:
@@ -256,6 +282,9 @@ final class RemoteServer: ObservableObject {
         let screens: [Screen]
         let map: MapState
         let crew: Crew?
+        let liveOn: Bool
+        let liveBPM: Double
+        let liveSection: String
     }
 
     private func stateJSON() -> Data {
@@ -321,8 +350,19 @@ final class RemoteServer: ObservableObject {
                       warnings: c.issues.filter { $0.severity == .warning }.count,
                       fixable: c.issues.filter { $0.fix != nil }.count,
                       top: c.issues.prefix(5).map { "\($0.severity.label): \($0.title)" })
-            })
+            },
+            liveOn: live?.running ?? false,
+            liveBPM: live?.bpm ?? 0,
+            liveSection: live?.section ?? "")
         return (try? JSONEncoder().encode(state)) ?? Data("{}".utf8)
+    }
+
+    var crowdJoinURL: String? { crowd?.cloudJoinURL ?? addresses.first.map { "\($0)/crowd" } }
+
+    private func crowdJSON() -> Data {
+        var obj = crowd?.controlState ?? [:]
+        obj["joinURL"] = crowdJoinURL ?? ""
+        return (try? JSONSerialization.data(withJSONObject: obj)) ?? Data("{}".utf8)
     }
 
     private func mapState() -> RemoteState.MapState {
@@ -358,7 +398,9 @@ final class RemoteServer: ObservableObject {
                     return
                 }
             }
-            if isComplete || error != nil || buf.count > 1_000_000 {
+            // Headers must arrive in the first 64 KB; bodies (crowd media uploads) may be up to 300 MB.
+            let headerDone = buf.range(of: Data("\r\n\r\n".utf8)) != nil
+            if isComplete || error != nil || (!headerDone && buf.count > 65_536) || buf.count > 300_000_000 {
                 completion(buf.isEmpty ? nil : buf)
                 return
             }

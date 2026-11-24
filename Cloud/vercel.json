@@ -1,0 +1,23 @@
+{
+  "rewrites": [
+    {
+      "source": "/r/:room",
+      "destination": "/crowd.html"
+    },
+    {
+      "source": "/p/:id",
+      "destination": "/pitch.html"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/crowd.html",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=60, s-maxage=300"
+        }
+      ]
+    }
+  ]
+}

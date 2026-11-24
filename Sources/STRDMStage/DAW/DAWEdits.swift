@@ -30,6 +30,47 @@ extension DAWEngine {
         selectedTrackID = t.id
     }
 
+    /// Vocal track wired like a Pro Tools vocal chain: live-rack plugins (Auto-Tune…) first, then clean-up,
+    /// armed + input monitoring on, with reverb / delay sends.
+    func addVocalTrack(_ preset: VocalTrackPreset, rack: VocalRack) {
+        var t = DAWTrack(name: preset.rawValue, kind: .audio, color: preset == .lead ? .pink : (preset == .hype ? .orange : .purple))
+        t.inputChannel = rack.inputChannel
+        t.armed = true
+        t.monitor = true
+        // The live rack's chain (with its saved settings) comes first, exactly as on stage.
+        var chain = rack.plugins.map { var p = $0; p.id = UUID(); return p }
+        chain.insert(.stock(.highPass), at: 0)
+        switch preset {
+        case .lead: chain += [.stock(.compressor), .stock(.eq)]
+        case .adlibs: chain += [.stock(.compressor), .stock(.eq)]; t.pan = 0.25
+        case .hype: chain += [.stock(.compressor), .stock(.distortion)]
+        case .bgv: chain += [.stock(.compressor), .stock(.lowPass)]; t.pan = -0.3; t.volumeDB = -4
+        }
+        t.effects = chain
+        let buses = project.buses.indices
+        t.sends = buses.map { i in DAWSend(busIndex: i, levelDB: preset == .adlibs && i == 1 ? -8 : (preset == .bgv && i == 0 ? -8 : -16)) }
+        edit { p in
+            for i in p.tracks.indices where p.tracks[i].kind == .audio { p.tracks[i].armed = false }
+            p.tracks.append(t)
+        }
+        selectedTrackID = t.id
+        status = "\(preset.rawValue) ready — armed and monitoring\(rack.plugins.isEmpty ? "" : " through \(rack.plugins.map(\.name).joined(separator: " → "))")"
+    }
+
+    /// Swap a clip with an earlier take recorded over the same spot.
+    func useTake(_ takeID: UUID, replacing clipID: UUID, trackID: UUID) {
+        edit { p in
+            guard let ti = p.tracks.firstIndex(where: { $0.id == trackID }),
+                  let ci = p.tracks[ti].audioClips.firstIndex(where: { $0.id == clipID }),
+                  var takes = p.tracks[ti].takes, let k = takes.firstIndex(where: { $0.id == takeID }) else { return }
+            let current = p.tracks[ti].audioClips[ci]
+            p.tracks[ti].audioClips[ci] = takes[k]
+            takes[k] = current
+            p.tracks[ti].takes = takes
+        }
+        selectedClipID = takeID
+    }
+
     func deleteTrack(_ id: UUID) {
         edit { $0.tracks.removeAll { $0.id == id } }
         if selectedTrackID == id { selectedTrackID = project.tracks.first?.id }

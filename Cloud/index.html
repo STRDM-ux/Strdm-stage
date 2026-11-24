@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>STRDM Live</title>
+<style>
+ body{margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;background:radial-gradient(circle at 50% 35%,#3a0a3a,#000 70%);color:#fff;font-family:-apple-system,BlinkMacSystemFont,sans-serif;text-align:center;padding:24px}
+ .b{font-weight:900;font-size:38px;letter-spacing:.16em;background:linear-gradient(90deg,#ff3d81,#00e5ff);-webkit-background-clip:text;color:transparent}
+ input{font-size:28px;text-align:center;letter-spacing:.3em;text-transform:uppercase;width:220px;padding:12px;border-radius:14px;border:1px solid #333;background:#111;color:#fff}
+ button{font-size:20px;font-weight:800;padding:14px 34px;border:none;border-radius:30px;color:#fff;background:linear-gradient(135deg,#ff1493,#7a00ff)}
+ p{opacity:.7;max-width:340px}
+</style></head><body>
+<div class="b">STRDM LIVE</div>
+<p>Scan the QR code on the screens — or enter the show code:</p>
+<input id="c" maxlength="12" autocomplete="off"><button onclick="if(c.value)location.href='/r/'+c.value.trim().toUpperCase()">Join</button>
+</body></html>

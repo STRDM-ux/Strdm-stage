@@ -1,0 +1,10 @@
+{
+  "name": "strdm-live-cloud",
+  "private": true,
+  "type": "module",
+  "description": "STRDM Live Cloud — crowd-phone light show relay for STRDM Stage",
+  "dependencies": {
+    "@vercel/blob": "^1.0.0"
+  },
+  "engines": { "node": ">=20" }
+}

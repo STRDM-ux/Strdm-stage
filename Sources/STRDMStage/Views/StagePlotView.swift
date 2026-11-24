@@ -41,6 +41,8 @@ struct StagePlotView: View {
     @State private var snap: Double = 0.25
     @State private var showRig = false
     @State private var showSet = false
+    @State private var pitchStatus: String?
+    @EnvironmentObject var crowdCtl: CrowdController
 
     var body: some View {
         VStack(spacing: 0) {
@@ -71,9 +73,24 @@ struct StagePlotView: View {
                 Button { showRig = true } label: { Label("Light This Stage…", systemImage: "wand.and.rays") }
                     .help("Design and patch a lighting rig that fits this stage")
                 Button {
+                    pitchStatus = "Publishing…"
+                    Task {
+                        if crowdCtl.logoURL == nil { await crowdCtl.uploadLogo() }
+                        if let url = await PitchPublisher.publish(show: store.show, cloudURL: crowdCtl.cloudURL, logo: crowdCtl.logoURL) {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(url.absoluteString, forType: .string)
+                            NSWorkspace.shared.open(url)
+                            pitchStatus = "Link copied"
+                        } else { pitchStatus = "Couldn't publish — online?" }
+                    }
+                } label: { Label(pitchStatus ?? "3D Pitch Link", systemImage: "link") }
+                    .help("Publish this stage as a live 3D web link for clients and promoters (link copied to the clipboard)")
+                Button { DXFExporter.export(store.show) } label: { Label("DXF", systemImage: "square.and.arrow.up") }
+                    .help("Export the stage plot as an AutoCAD DXF (metres, one layer per item type)")
+                Button {
                     RiderExporter.export(show: store.show)
                 } label: {
-                    Label("Export Tech Rider PDF", systemImage: "doc.richtext")
+                    Label("Export Tech Rider + Engineering PDF", systemImage: "doc.richtext")
                 }
                 .buttonStyle(.borderedProminent)
             }
@@ -603,6 +620,9 @@ private struct StageItemInspector: View {
                     }
                     Toggle("Locked", isOn: Binding(get: { item.wrappedValue.locked == true }, set: { item.wrappedValue.locked = $0 ? true : nil }))
                 }
+                if item.wrappedValue.kind == .ledWall || item.wrappedValue.kind == .ledFloor {
+                    LEDWallInspector(item: item)
+                }
                 Section {
                     TextField("Notes", text: item.notes, axis: .vertical).lineLimit(2...4)
                 }
@@ -805,7 +825,8 @@ enum RiderExporter {
         guard let context = CGContext(url as CFURL, mediaBox: &box, nil) else { return }
         let pages: [AnyView] = [
             AnyView(RiderPlotPage(show: show)),
-            AnyView(RiderInputPage(show: show))
+            AnyView(RiderInputPage(show: show)),
+            AnyView(RiderEngineeringPage(show: show))
         ]
         for page in pages {
             let renderer = ImageRenderer(content: page.frame(width: pageSize.width, height: pageSize.height).background(Color.white))
@@ -919,5 +940,89 @@ private struct RiderInputPage: View {
         }
         .padding(36)
         .foregroundStyle(Color.black)
+    }
+}
+
+
+// MARK: - Engineering dossier page (LED, power, rigging, DMX)
+
+private struct RiderEngineeringPage: View {
+    let show: Show
+
+    private struct Load { let name: String; let kg: Double; let watts: Double }
+
+    private func fixtureSpecs(_ f: Fixture) -> (kg: Double, w: Double, kind: String) {
+        let kinds = Set(f.profile.channels.map(\.kind))
+        if kinds.contains(.laserMode) { return (12, 120, "Laser") }
+        if kinds.contains(.haze) { return (20, 1100, "Hazer") }
+        if kinds.contains(.pan) { return (24, 480, "Moving head") }
+        return (7, 180, "Wash / par")
+    }
+
+    var body: some View {
+        let walls = show.stagePlot.items.filter { $0.kind == .ledWall || $0.kind == .ledFloor }
+        let specs = walls.map { ($0, $0.led ?? LEDWallSpec.fitting(widthM: $0.width, heightM: min(8, max(1, $0.topHeight)), panel: LEDPanel.library[0])) }
+        let fixtures = show.lighting.fixtures
+        let byKind = Dictionary(grouping: fixtures) { fixtureSpecs($0).kind }
+        let lightKW = fixtures.map { fixtureSpecs($0).w }.reduce(0, +) / 1000
+        let ledKW = specs.map { $0.1.maxWatts }.reduce(0, +) / 1000
+        let sfxKW = Double(show.effects.devices.count) * 0.3
+        let audioKW = 12.0
+        let total = lightKW + ledKW + sfxKW + audioKW
+        let trusses = show.stagePlot.items.filter { $0.kind == .truss }
+        VStack(alignment: .leading, spacing: 10) {
+            RiderHeader(show: show, title: "ENGINEERING — LED · POWER · RIGGING · DMX")
+            Text("LED WALLS").font(.system(size: 10, weight: .heavy))
+            if specs.isEmpty { Text("No LED walls in the stage design.").font(.system(size: 9)) }
+            Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 3) {
+                GridRow { Text("WALL"); Text("PANEL"); Text("GRID"); Text("SIZE"); Text("PIXELS"); Text("PORTS"); Text("KG"); Text("kW MAX") }
+                    .font(.system(size: 8, weight: .bold))
+                ForEach(specs, id: \.0.id) { item, s in
+                    GridRow {
+                        Text(item.label); Text(s.panel.name).lineLimit(1); Text("\(s.cols)×\(s.rows)")
+                        Text(String(format: "%.1f×%.1f m", s.sizeM.w, s.sizeM.h)); Text("\(s.resolution.w)×\(s.resolution.h)")
+                        Text("\(s.ports)"); Text(String(format: "%.0f", s.weightKg)); Text(String(format: "%.1f", s.maxWatts / 1000))
+                    }
+                    .font(.system(size: 8))
+                }
+            }
+            Divider()
+            Text("POWER (estimated, full output)").font(.system(size: 10, weight: .heavy))
+            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 3) {
+                GridRow { Text("Lighting (\(fixtures.count) fixtures)"); Text(String(format: "%.1f kW", lightKW)) }
+                GridRow { Text("LED video"); Text(String(format: "%.1f kW", ledKW)) }
+                GridRow { Text("Special effects control"); Text(String(format: "%.1f kW", sfxKW)) }
+                GridRow { Text("Audio (FOH, monitors, backline — allowance)"); Text(String(format: "%.1f kW", audioKW)) }
+                GridRow { Text("TOTAL").bold(); Text(String(format: "%.1f kW  ≈ %.0f A @ 230 V 3-phase per leg", total, total * 1000 / (230 * 3))).bold() }
+            }
+            .font(.system(size: 9))
+            Divider()
+            Text("RIGGING (fixtures within 1 m of each truss + flown LED)").font(.system(size: 10, weight: .heavy))
+            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 3) {
+                ForEach(trusses) { t in
+                    let hung = fixtures.filter { f in
+                        guard let x = f.stageX, let y = f.stageY else { return false }
+                        return abs(y - t.y) < 1 && abs(x - t.x) < t.width / 2 + 0.5
+                    }
+                    let flown = specs.filter { abs($0.0.y - t.y) < 1.2 && ($0.0.elevation ?? 0) > 0.5 }
+                    let kg = hung.map { fixtureSpecs($0).kg }.reduce(0, +) + flown.map { $0.1.weightKg }.reduce(0, +) + t.width * 7
+                    GridRow {
+                        Text(t.label); Text(String(format: "%.1f m @ %.1f m trim", t.width, t.topHeight))
+                        Text("\(hung.count) fixtures"); Text(String(format: "≈ %.0f kg incl. truss", kg)).bold()
+                    }
+                }
+            }
+            .font(.system(size: 9))
+            Text("Rigging loads are planning estimates — confirm with the venue's rigger and the hoist/truss manufacturer's load tables.")
+                .font(.system(size: 7)).foregroundStyle(.gray)
+            Divider()
+            Text("DMX").font(.system(size: 10, weight: .heavy))
+            Text("\(fixtures.count) fixtures on \(Set(fixtures.map(\.universe)).count) universe(s) · " +
+                 byKind.map { "\($0.value.count) \($0.key)" }.sorted().joined(separator: " · "))
+                .font(.system(size: 9))
+            Spacer()
+        }
+        .padding(36)
+        .foregroundStyle(.black)
     }
 }

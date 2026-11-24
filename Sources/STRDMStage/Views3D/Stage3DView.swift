@@ -5,12 +5,14 @@ import Metal
 import AVFoundation
 
 enum CameraPreset: String, CaseIterable, Identifiable {
-    case foh, crowd, artist, top, side
+    case foh, crowd, frontRow, artist, drone, top, side
     var id: String { rawValue }
     var label: String {
         switch self {
         case .foh: return "FOH"
         case .crowd: return "Back of crowd"
+        case .frontRow: return "Front row"
+        case .drone: return "Drone orbit"
         case .artist: return "Artist view"
         case .top: return "Top down"
         case .side: return "Side stage"
@@ -20,6 +22,8 @@ enum CameraPreset: String, CaseIterable, Identifiable {
         switch self {
         case .foh: return "slider.horizontal.3"
         case .crowd: return "person.3.fill"
+        case .frontRow: return "person.fill.viewfinder"
+        case .drone: return "airplane"
         case .artist: return "music.mic"
         case .top: return "square.grid.3x3"
         case .side: return "arrow.left.and.right"
@@ -37,6 +41,7 @@ struct Stage3DView: NSViewRepresentable {
     @EnvironmentObject var lighting: LightingEngine
     @EnvironmentObject var screens: ScreenManager
     @EnvironmentObject var visuals: VisualEngine
+    @EnvironmentObject var crowdCtl: CrowdController
 
     func makeCoordinator() -> Stage3DController { Stage3DController(mode: mode) }
 
@@ -48,6 +53,10 @@ struct Stage3DView: NSViewRepresentable {
         view.preferredFramesPerSecond = 60
         context.coordinator.screens = screens
         context.coordinator.visuals = visuals
+        context.coordinator.crowdCtl = crowdCtl
+        view.delegate = context.coordinator.frames
+        view.rendersContinuously = mode == .live
+        Viewer3DSettings.shared.activeController = context.coordinator
         context.coordinator.attach(view: view, store: store, lighting: lighting)
         context.coordinator.apply(camera: camera, animated: false)
         context.coordinator.showCrowd = showCrowd
@@ -81,6 +90,12 @@ final class Stage3DController: NSObject {
     private var cameras: [CameraPreset: SCNNode] = [:]
     weak var screens: ScreenManager?
     weak var visuals: VisualEngine?
+    weak var crowdCtl: CrowdController?
+    let frames = FrameCounter()
+    private let settings = Viewer3DSettings.shared
+    private var phoneMats: [SCNMaterial] = []
+    private var droneAngle = 0.0
+    private var lastDaylight: Bool?
     private var visualsRenderer: SCNRenderer?
     private var wallMediaIDs: [Int: ObjectIdentifier] = [:]
     private var visualsFrame: (tick: Int, image: NSImage)?
@@ -152,7 +167,7 @@ final class Stage3DController: NSObject {
         scene.rootNode.addChildNode(strobe)
 
         rebuild()
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / (mode == .live ? 60.0 : 30.0), repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
         if let t = timer { RunLoop.main.add(t, forMode: .common) }
@@ -210,6 +225,8 @@ final class Stage3DController: NSObject {
         let stageCentre = SCNVector3(0, CGFloat(deckH + 1.2), CGFloat(-d / 2))
         cam(.foh, SCNVector3(0, 4.2, CGFloat(14 + w * 0.3)), lookAt: stageCentre)
         cam(.crowd, SCNVector3(-2, 2.4, CGFloat(26 + w * 0.3)), lookAt: stageCentre, fov: 45)
+        cam(.frontRow, SCNVector3(1, 1.7, 3.2), lookAt: SCNVector3(0, CGFloat(deckH + 2.2), CGFloat(-d / 2)), fov: 78)
+        cam(.drone, SCNVector3(CGFloat(w * 0.8), 14, CGFloat(10 + w * 0.4)), lookAt: stageCentre, fov: 55)
         cam(.artist, SCNVector3(0, CGFloat(deckH + 1.75), CGFloat(-d * 0.35)),
             lookAt: SCNVector3(0, 1.8, 14), fov: 75)
         cam(.top, SCNVector3(0, CGFloat(max(w, d) * 1.6 + 6), CGFloat(-d / 2 + 0.01)),
@@ -232,7 +249,13 @@ final class Stage3DController: NSObject {
         parts += s.stagePlot.items.map { "\($0.id)\($0.kind.rawValue)\($0.x),\($0.y),\($0.width),\($0.depth),\($0.rotation),\($0.label),\($0.height ?? -1),\($0.elevation ?? 0)" }
         parts.append("\(s.stagePlot.venueModelPath ?? "")\(s.stagePlot.venueModelScale ?? 1)\(s.stagePlot.venueModelOffsetY ?? 0)")
         parts += s.lighting.fixtures.map { "\($0.id)\($0.profile.name)\($0.stageX ?? -99),\($0.stageY ?? -99),\($0.stageZ ?? -99)" }
+        parts.append("\(settings.crowdSize.rawValue)\(settings.roof)")
         return parts.joined(separator: "|")
+    }
+
+    /// Writes the whole venue (stage, rig, crowd, sparks) as a 3D file — .usdz opens in Blender, Reality Composer and most CAD/previs tools.
+    func export(to url: URL) -> Bool {
+        scene.write(to: url, options: nil, delegate: nil, progressHandler: nil)
     }
 
     private func rebuild() {
@@ -308,21 +331,19 @@ final class Stage3DController: NSObject {
         let trussHeight = deck + 6
         let customRig = store.show.stagePlot.items.contains { $0.kind == .truss || $0.kind == .trussTower }
         for (y, len) in (customRig ? [] : [(-0.8, w + 1), (d * 0.55, w), (d - 1.2, w)]) {
-            let t = SCNBox(width: CGFloat(len), height: 0.3, length: 0.3, chamferRadius: 0)
-            t.firstMaterial = material(NSColor(white: 0.55, alpha: 1), metalness: 0.9, roughness: 0.35)
-            let n = SCNNode(geometry: t)
-            n.position = pt(w / 2, y, trussHeight + 0.25, width: w)
+            let n = latticeTruss(length: len)
+            n.position = pt(w / 2, y, trussHeight + 0.1, width: w)
             staticRoot.addChildNode(n)
         }
         for x in (customRig ? [] : [-0.3, w + 0.3]) {
             for y in [-0.8, d - 1.2] {
-                let leg = SCNBox(width: 0.3, height: CGFloat(trussHeight + 0.4), length: 0.3, chamferRadius: 0)
-                leg.firstMaterial = material(NSColor(white: 0.5, alpha: 1), metalness: 0.9, roughness: 0.4)
-                let n = SCNNode(geometry: leg)
+                let n = latticeTruss(length: trussHeight + 0.4, vertical: true)
                 n.position = pt(x, y, (trussHeight + 0.4) / 2, width: w)
                 staticRoot.addChildNode(n)
             }
         }
+
+        if settings.roof { buildRoof(width: w, depth: d, height: trussHeight + 2.2) }
 
         // Stage-plot gear at real heights
         for item in store.show.stagePlot.items where item.kind != .person && item.kind != .vocalMic {
@@ -623,12 +644,17 @@ final class Stage3DController: NSObject {
         let bodies = mats.map { m -> SCNGeometry in let g = SCNCapsule(capRadius: 0.2, height: 1.3); g.firstMaterial = m; return g }
         let head = SCNSphere(radius: 0.12)
         head.firstMaterial = material(NSColor(red: 0.3, green: 0.2, blue: 0.16, alpha: 1), roughness: 0.6)
-        let phone = SCNBox(width: 0.07, height: 0.13, length: 0.01, chamferRadius: 0.005)
-        phone.firstMaterial = emissive(NSColor(white: 0.9, alpha: 1), strength: 1)
+        let phones = (0..<groups.count).map { g -> SCNGeometry in
+            let p = SCNBox(width: 0.08, height: 0.15, length: 0.012, chamferRadius: 0.006)
+            let m = emissive(NSColor(white: 0.9, alpha: 1), strength: 1.6)
+            m.name = "phone\(g)"
+            p.firstMaterial = m
+            return p
+        }
 
-        let rows = 26
-        let spanX = w + 8
+        let rows = settings.crowdSize.rows
         for r in 0..<rows {
+            let spanX = w + settings.crowdSize.extraWidth + Double(max(0, r - 20)) * 0.6
             let z = 2.2 + Double(r) * 0.62
             let perRow = Int(spanX / 0.62)
             for c in 0..<perRow {
@@ -643,15 +669,119 @@ final class Stage3DController: NSObject {
                 let h = SCNNode(geometry: head)
                 h.position = SCNVector3(0, CGFloat(1.43 * height + 0.05), 0)
                 person.addChildNode(h)
-                if rnd() < 0.12 {   // phones up
-                    let p = SCNNode(geometry: phone)
+                let g = (r + c) % groups.count
+                if rnd() < 0.22 {   // phones up
+                    let p = SCNNode(geometry: phones[g])
                     p.position = SCNVector3(0.18, CGFloat(1.75 * height), -0.15)
                     person.addChildNode(p)
                 }
                 person.position = SCNVector3(CGFloat(x), 0, CGFloat(z + (rnd() - 0.5) * 0.3))
-                groups[(r + c) % groups.count].addChildNode(person)
+                groups[g].addChildNode(person)
             }
         }
+        // Merge each group into one mesh so thousands of people stay smooth.
+        phoneMats = []
+        crowdGroups = groups.enumerated().map { g, node in
+            let flat = node.flattenedClone()
+            node.removeFromParentNode()
+            crowdRoot.addChildNode(flat)
+            var mats = flat.geometry?.materials ?? []
+            flat.enumerateChildNodes { n, _ in mats += n.geometry?.materials ?? [] }
+            if let m = mats.first(where: { $0.name == "phone\(g)" }) { phoneMats.append(m) }
+            return flat
+        }
+    }
+
+    /// Box-section lattice truss (4 chords + zig-zag diagonals), along x — or y when vertical.
+    private func latticeTruss(length: Double, vertical: Bool = false, size: CGFloat = 0.3) -> SCNNode {
+        let metal = material(NSColor(white: 0.62, alpha: 1), metalness: 0.9, roughness: 0.3)
+        let node = SCNNode()
+        let L = CGFloat(length), half = size / 2
+        for (a, b) in [(-half, -half), (-half, half), (half, -half), (half, half)] {
+            let chord = SCNCylinder(radius: 0.024, height: L)
+            chord.firstMaterial = metal
+            let c = SCNNode(geometry: chord)
+            c.eulerAngles.z = .pi / 2
+            c.position = SCNVector3(0, a, b)
+            node.addChildNode(c)
+        }
+        let step: CGFloat = 0.5
+        let n = max(1, Int(L / step))
+        let diag = (step * step + size * size).squareRoot()
+        for k in 0..<n {
+            let x = -L / 2 + (CGFloat(k) + 0.5) * step
+            for (face, flip) in [(-half, 1.0), (half, -1.0), (CGFloat(0), 1.0), (CGFloat(0), -1.0)] as [(CGFloat, Double)] {
+                let rod = SCNCylinder(radius: 0.012, height: diag)
+                rod.firstMaterial = metal
+                let r = SCNNode(geometry: rod)
+                let angle = atan2(size, step) * CGFloat(k % 2 == 0 ? flip : -flip)
+                if face == 0 {
+                    // top / bottom faces
+                    r.eulerAngles = SCNVector3(.pi / 2, 0, .pi / 2 - angle)
+                    r.position = SCNVector3(x, flip > 0 ? half : -half, 0)
+                } else {
+                    r.eulerAngles.z = .pi / 2 - angle
+                    r.position = SCNVector3(x, 0, face)
+                }
+                node.addChildNode(r)
+            }
+        }
+        let flat = node.flattenedClone()
+        if vertical { flat.eulerAngles.z = .pi / 2 }
+        return flat
+    }
+
+    /// Ground-support roof: four lattice towers, a perimeter + cross grid, a dark roof skin and side wings.
+    private func buildRoof(width w: Double, depth d: Double, height h: Double) {
+        let over = 1.0
+        let rw = w + over * 2, rd = d + over * 1.5
+        let x0 = -over, x1 = w + over, yFront = -over * 0.8, yBack = d + over * 0.7
+        let roof = SCNNode()
+        for (x, y) in [(x0, yFront), (x1, yFront), (x0, yBack), (x1, yBack)] {
+            let tower = latticeTruss(length: h, vertical: true, size: 0.52)
+            tower.position = pt(x, y, h / 2, width: w)
+            roof.addChildNode(tower)
+            let base = SCNBox(width: 1.4, height: 0.08, length: 1.4, chamferRadius: 0)
+            base.firstMaterial = material(NSColor(white: 0.3, alpha: 1), metalness: 0.7)
+            let b = SCNNode(geometry: base); b.position = pt(x, y, 0.04, width: w)
+            roof.addChildNode(b)
+        }
+        for y in stride(from: yFront, through: yBack + 0.01, by: (yBack - yFront) / 4) {
+            let t = latticeTruss(length: rw, size: 0.52)
+            t.position = pt(w / 2, y, h, width: w)
+            roof.addChildNode(t)
+        }
+        for x in [x0, x1, w / 2] {
+            let t = latticeTruss(length: rd, size: 0.52)
+            t.eulerAngles.y = .pi / 2
+            t.position = pt(x, (yFront + yBack) / 2, h, width: w)
+            roof.addChildNode(t)
+        }
+        let skinMat = SCNMaterial()
+        skinMat.lightingModel = .physicallyBased
+        skinMat.diffuse.contents = NSColor(white: 0.1, alpha: 1)
+        skinMat.roughness.contents = 0.9
+        skinMat.isDoubleSided = true
+        let skin = SCNNode(geometry: SCNPlane(width: CGFloat(rw + 0.6), height: CGFloat(rd + 0.6)))
+        skin.geometry?.firstMaterial = skinMat
+        skin.eulerAngles.x = -.pi / 2 + 0.04
+        skin.position = pt(w / 2, (yFront + yBack) / 2, h + 0.55, width: w)
+        roof.addChildNode(skin)
+        // Mesh side wings (scrim) that frame the stage
+        let wingMat = SCNMaterial()
+        wingMat.lightingModel = .physicallyBased
+        wingMat.diffuse.contents = NSColor(white: 0.18, alpha: 1)
+        wingMat.transparency = 0.85
+        wingMat.isDoubleSided = true
+        for x in [x0 - 0.3, x1 + 0.3] {
+            let wing = SCNNode(geometry: SCNPlane(width: CGFloat(rd * 0.85), height: CGFloat(h)))
+            wing.geometry?.firstMaterial = wingMat
+            wing.eulerAngles.y = .pi / 2
+            wing.position = pt(x, (yFront + yBack) / 2 + rd * 0.07, h / 2, width: w)
+            roof.addChildNode(wing)
+        }
+        roof.name = "roof"
+        staticRoot.addChildNode(roof)
     }
 
     // MARK: Per-frame update
@@ -686,9 +816,23 @@ final class Stage3DController: NSObject {
             if rig.isEffect { strobe = max(strobe, level); continue }
             if rig.isHaze { haze = max(haze, level); continue }
 
-            let target2D = lighting.beamTarget(f)
-            let onStage = target2D.x >= 0 && target2D.x <= w && target2D.y >= 0 && target2D.y <= d
-            let target = pt(Double(target2D.x), Double(target2D.y), onStage ? deck : 0, width: w)
+            let target: SCNVector3
+            if rig.isMover, let dir = moverDirection(f) {
+                // True 3D aim from pan/tilt, so fans and air looks shoot over the crowd instead of hitting the floor.
+                let p = rig.pivot.position
+                var reach = 38.0
+                if dir.y < -0.03 {
+                    reach = Double(p.y - CGFloat(deck)) / Double(-dir.y)
+                    let lx = Double(p.x + dir.x * CGFloat(reach)) + w / 2, ly = -Double(p.z + dir.z * CGFloat(reach))
+                    if !(lx >= 0 && lx <= w && ly >= 0 && ly <= d) { reach = Double(p.y) / Double(-dir.y) }
+                }
+                reach = min(38, max(0.5, reach))
+                target = SCNVector3(p.x + dir.x * CGFloat(reach), p.y + dir.y * CGFloat(reach), p.z + dir.z * CGFloat(reach))
+            } else {
+                let target2D = lighting.beamTarget(f)
+                let onStage = target2D.x >= 0 && target2D.x <= w && target2D.y >= 0 && target2D.y <= d
+                target = pt(Double(target2D.x), Double(target2D.y), onStage ? deck : 0, width: w)
+            }
             rig.pivot.look(at: target)
 
             let p = rig.pivot.position
@@ -703,7 +847,7 @@ final class Stage3DController: NSObject {
             rig.light.color = color
             rig.light.intensity = CGFloat(level * (rig.isMover ? 5200 : 3600))
             rig.beamMaterial.emission.contents = color
-            rig.beamMaterial.transparency = CGFloat(level * (rig.isMover ? 0.32 : 0.16))
+            rig.beamMaterial.transparency = CGFloat(level * (rig.isMover ? 0.32 : 0.16) * (0.55 + settings.haze * 1.1) * (settings.daylight ? 0.35 : 1))
             rig.lens.emission.contents = NSColor(red: rgb.r * level, green: rgb.g * level, blue: rgb.b * level, alpha: 1)
             rig.coneNode.isHidden = level < 0.02 || mode == .plot
 
@@ -719,8 +863,34 @@ final class Stage3DController: NSObject {
 
         // Haze thickens the air so beams read
         if mode == .live {
-            scene.fogEndDistance = CGFloat(70 - haze * 35)
-            scene.fogColor = NSColor(white: 0.02 + haze * 0.05, alpha: 1)
+            let air = min(1, haze + settings.haze * 0.6)
+            scene.fogEndDistance = settings.daylight ? 0 : CGFloat(80 - air * 45)
+            scene.fogColor = NSColor(white: 0.02 + air * 0.05, alpha: 1)
+        }
+        if settings.daylight != lastDaylight {
+            lastDaylight = settings.daylight
+            scene.background.contents = settings.daylight ? NSColor(red: 0.55, green: 0.68, blue: 0.85, alpha: 1)
+                                                          : (mode == .live ? NSColor.black : NSColor(white: 0.07, alpha: 1))
+        }
+
+        // Crowd phones show what STRDM Live is putting on the audience's phones right now.
+        if !phoneMats.isEmpty {
+            let beat = lighting.songStatus.map { $0.bpm > 0 ? $0.elapsed * $0.bpm / 60 : 0 } ?? Date().timeIntervalSinceReferenceDate * 2
+            for (g, m) in phoneMats.enumerated() {
+                let c = settings.phoneLights ? (crowdCtl?.previewColor(beat: beat, seed: Double(g) / Double(phoneMats.count)) ?? RGB(r: 0.9, g: 0.9, b: 0.9)) : RGB(r: 0.03, g: 0.03, b: 0.04)
+                m.emission.contents = NSColor(red: c.r, green: c.g, blue: c.b, alpha: 1)
+            }
+        }
+
+        // FPS readout + drone orbit
+        if settings.activeController === self, tickCount % (mode == .live ? 60 : 30) == 0 {
+            settings.fps = frames.take()
+        }
+        if appliedCamera == .drone, let cam = cameras[.drone], view?.pointOfView === cam {
+            droneAngle += 0.0025
+            let r = 16 + w * 0.55
+            cam.position = SCNVector3(CGFloat(r * sin(droneAngle + 0.7)), CGFloat(12 + w * 0.15), CGFloat(-d / 2 + r * cos(droneAngle + 0.7)))
+            cam.look(at: SCNVector3(0, CGFloat(deck + 1.5), CGFloat(-d / 2)))
         }
 
         // LED wall shows what the real screen shows: video, still, or the generated visuals.
@@ -739,7 +909,7 @@ final class Stage3DController: NSObject {
                 wall.mat.emission.contents = mode == .plot ? NSColor(red: 0.3, green: 0, blue: 0.5, alpha: 1) : NSColor(white: 0.03, alpha: 1)
             }
         }
-        houseLight.intensity = mode == .live ? CGFloat(40 + min(1, washLevel / max(1, washCount)) * 60) : 450
+        houseLight.intensity = settings.daylight ? 900 : (mode == .live ? CGFloat(40 + min(1, washLevel / max(1, washCount)) * 60) : 450)
 
         // Performers follow their live-map positions
         for p in lighting.performers {
@@ -759,6 +929,22 @@ final class Stage3DController: NSObject {
         } else {
             crowdGroups.forEach { $0.position = SCNVector3Zero }
         }
+    }
+
+    /// Unit beam direction (scene space) from a mover's live pan/tilt.
+    private func moverDirection(_ f: Fixture) -> SCNVector3? {
+        guard let lighting, let values = lighting.live[f.id] else { return nil }
+        var pan = 0.5, tilt = 0.5, hasPan = false
+        for (i, ch) in f.profile.channels.enumerated() where i < values.count {
+            if ch.kind == .pan { pan = values[i] / 255; hasPan = true }
+            if ch.kind == .panFine { pan += values[i] / 65535 }
+            if ch.kind == .tilt { tilt = values[i] / 255 }
+            if ch.kind == .tiltFine { tilt += values[i] / 65535 }
+        }
+        guard hasPan else { return nil }
+        let (panDeg, tiltDeg) = lighting.angles(pan: pan, tilt: tilt)
+        let a = panDeg * .pi / 180, t = tiltDeg * .pi / 180
+        return SCNVector3(CGFloat(sin(t) * sin(a)), CGFloat(-cos(t)), CGFloat(sin(t) * cos(a)))
     }
 
     // MARK: LED wall media
@@ -869,10 +1055,13 @@ struct CameraPresetBar: View {
                 Button {
                     camera = preset
                 } label: {
-                    Label(preset.label, systemImage: preset.symbol)
-                        .labelStyle(.titleAndIcon)
-                        .font(.caption)
+                    if camera == preset {
+                        Label(preset.label, systemImage: preset.symbol).labelStyle(.titleAndIcon).font(.caption)
+                    } else {
+                        Image(systemName: preset.symbol).font(.caption)
+                    }
                 }
+                .help(preset.label)
                 .buttonStyle(.bordered)
                 .tint(camera == preset ? .pink : .gray)
             }

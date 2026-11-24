@@ -4,12 +4,13 @@ import UniformTypeIdentifiers
 import AVFoundation
 
 enum StudioPanel: String, CaseIterable, Identifiable {
-    case editor = "Editor", mixer = "Mixer", devices = "Devices", export = "Export"
+    case editor = "Editor", mixer = "Mixer", vocals = "I/O & Vocals", devices = "Devices", export = "Export"
     var id: String { rawValue }
     var icon: String {
         switch self {
         case .editor: return "pianokeys"
         case .mixer: return "slider.vertical.3"
+        case .vocals: return "music.mic"
         case .devices: return "cable.connector"
         case .export: return "square.and.arrow.up"
         }
@@ -24,7 +25,10 @@ struct StudioView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            StudioTransportBar(zoom: $zoom)
+            ScrollView(.horizontal, showsIndicators: false) {
+                StudioTransportBar(zoom: $zoom).fixedSize(horizontal: true, vertical: false)
+            }
+            .frame(maxWidth: .infinity)
             Divider()
             VSplitView {
                 ArrangementView(zoom: zoom, onOpenClip: { panel = .editor })
@@ -36,9 +40,9 @@ struct StudioView: View {
                         }
                         .pickerStyle(.segmented)
                         .labelsHidden()
-                        .frame(maxWidth: 420)
-                        Spacer()
-                        Text(daw.status).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        .frame(minWidth: 260, maxWidth: 420)
+                        Spacer(minLength: 4)
+                        Text(daw.status).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
                     }
                     .padding(.horizontal, 10).padding(.vertical, 6)
                     Divider()
@@ -46,6 +50,7 @@ struct StudioView: View {
                         switch panel {
                         case .editor: ClipEditorPanel()
                         case .mixer: MixerPanel()
+                        case .vocals: StudioVocalsPanel()
                         case .devices: DevicesPanel()
                         case .export: ExportPanel()
                         }
@@ -55,6 +60,8 @@ struct StudioView: View {
                 .frame(minHeight: 220, idealHeight: 300)
             }
         }
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+        .clipped()
         .background(Color(nsColor: .windowBackgroundColor))
     }
 }
@@ -63,6 +70,7 @@ struct StudioView: View {
 
 struct StudioTransportBar: View {
     @EnvironmentObject var daw: DAWEngine
+    @EnvironmentObject var store: ShowStore
     @Binding var zoom: Double
 
     private var p: DAWProject { daw.project }
@@ -152,6 +160,11 @@ struct StudioTransportBar: View {
 
             Menu {
                 Button("Audio Track") { daw.addTrack(kind: .audio) }
+                Menu("Vocal Track (with your live Auto-Tune rack)") {
+                    ForEach(VocalTrackPreset.allCases) { v in
+                        Button { daw.addVocalTrack(v, rack: store.show.vocalRack) } label: { Label(v.rawValue, systemImage: v.symbol) }
+                    }
+                }
                 Divider()
                 Button("Synth") { daw.addTrack(kind: .midi, instrument: .synth(preset: "Lead"), name: "Synth") }
                 Button("Drum Machine") { daw.addTrack(kind: .midi, instrument: .drumMachine(kit: "Dancehall"), name: "Drums") }
@@ -228,6 +241,10 @@ struct ArrangementView: View {
             HStack(alignment: .top, spacing: 0) {
                 VStack(spacing: 0) {
                     Color.clear.frame(height: Self.rulerHeight)
+                    if p.mix != nil {
+                        ShowMixHeader().frame(height: ShowMixLanes.total)
+                        Divider()
+                    }
                     ForEach(p.tracks) { t in
                         TrackHeader(track: t).frame(height: Self.rowHeight)
                         Divider()
@@ -240,6 +257,10 @@ struct ArrangementView: View {
                 ScrollView(.horizontal) {
                     VStack(alignment: .leading, spacing: 0) {
                         TimelineRuler(zoom: zoom, totalBeats: totalBeats).frame(width: width, height: Self.rulerHeight)
+                        if p.mix != nil {
+                            ShowMixLanes(zoom: zoom, width: width).frame(width: width, height: ShowMixLanes.total, alignment: .topLeading)
+                            Divider()
+                        }
                         ForEach(p.tracks) { t in
                             TrackLane(track: t, zoom: zoom, width: width, onOpenClip: onOpenClip)
                                 .frame(width: width, height: Self.rowHeight)
@@ -324,6 +345,8 @@ struct TimelineRuler: View {
 
 struct TrackHeader: View {
     @EnvironmentObject var daw: DAWEngine
+    @EnvironmentObject var store: ShowStore
+    @EnvironmentObject var audio: AudioEngine
     let track: DAWTrack
 
     var body: some View {
@@ -359,6 +382,19 @@ struct TrackHeader: View {
                 ForEach(TrackColor.allCases, id: \.self) { c in Button(c.rawValue.capitalized) { daw.updateTrack(track.id) { $0.color = c } } }
             }
             if track.kind == .audio {
+                Button(track.monitor ? "Input Monitoring Off" : "Input Monitoring On") { daw.updateTrack(track.id) { $0.monitor.toggle() } }
+                Button("Load Live Vocal Rack chain") {
+                    let rack = store.show.vocalRack
+                    daw.updateTrack(track.id) { t in
+                        t.effects = rack.plugins.map { var p = $0; p.id = UUID(); return p } + t.effects.filter { $0.componentManufacturer == kAudioUnitManufacturer_Apple }
+                        t.inputChannel = rack.inputChannel
+                    }
+                }
+                Button("Send this chain to the Live Vocal Rack") {
+                    store.show.vocalRack.plugins = track.effects.map { var p = $0; p.id = UUID(); return p }
+                    audio.loadVocalRack()
+                }
+                if let n = track.takes?.count, n > 0 { Text("\(n) earlier take\(n == 1 ? "" : "s") — right-click a clip to swap") }
                 Menu("Record Input") {
                     ForEach(0..<16, id: \.self) { i in Button("Input \(i + 1)") { daw.updateTrack(track.id) { $0.inputChannel = i } } }
                 }
@@ -433,9 +469,16 @@ struct TrackLane: View {
                 }
             }
             ForEach(track.audioClips) { c in
+                let alts = (track.takes ?? []).filter { $0.start < c.start + c.length && $0.start + $0.length > c.start }
                 ClipView(clipID: c.id, start: c.start, length: c.length, name: c.name, color: track.color.color,
                          zoom: zoom, height: ArrangementView.rowHeight, trackID: track.id, onOpen: onOpenClip) {
                     WaveformPreview(clip: c, zoom: zoom)
+                        .overlay(alignment: .topTrailing) {
+                            if !alts.isEmpty {
+                                Text("\(alts.count + 1) takes").font(.system(size: 8, weight: .bold)).padding(2)
+                                    .background(Capsule().fill(Color.black.opacity(0.5))).padding(3)
+                            }
+                        }
                 }
             }
             if dropHover { Rectangle().stroke(Color.accentColor, lineWidth: 2) }
@@ -502,6 +545,16 @@ struct ClipView<Content: View>: View {
         .onTapGesture(count: 2) { daw.selectedClipID = clipID; daw.selectedTrackID = trackID; onOpen() }
         .onTapGesture { daw.selectedClipID = clipID; daw.selectedTrackID = trackID }
         .contextMenu {
+            let track = daw.project.tracks.first { $0.id == trackID }
+            let alts = (track?.takes ?? []).filter { $0.start < start + length && $0.start + $0.length > start }
+            if !alts.isEmpty {
+                Section("Takes (playlists)") {
+                    ForEach(Array(alts.enumerated()), id: \.element.id) { i, t in
+                        Button("Use take \(i + 1): \(t.name)") { daw.useTake(t.id, replacing: clipID, trackID: trackID) }
+                    }
+                }
+                Divider()
+            }
             Button("Edit") { daw.selectedClipID = clipID; onOpen() }
             Button("Duplicate (⌘D)") { daw.selectedClipID = clipID; daw.duplicateSelectedClip() }
             Button("Split at Playhead (⌘E)") { daw.selectedClipID = clipID; daw.splitSelectedAtPlayhead() }
@@ -557,4 +610,29 @@ struct WaveformPreview: View {
 
 extension AudioEngine {
     nonisolated static func linearD(_ db: Double) -> Double { pow(10, db / 20) }
+}
+
+
+/// Pro Tools-style I/O + vocal setup inside the Studio: interface, buffer, master EQ and the live vocal rack.
+struct StudioVocalsPanel: View {
+    @EnvironmentObject var daw: DAWEngine
+    @EnvironmentObject var store: ShowStore
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Text("New vocal track:").font(.caption.weight(.semibold))
+                ForEach(VocalTrackPreset.allCases) { v in
+                    Button { daw.addVocalTrack(v, rack: store.show.vocalRack) } label: { Label(v.rawValue, systemImage: v.symbol) }
+                        .controlSize(.small)
+                }
+                Spacer()
+                Text("Tracks open with your live rack (Auto-Tune…) first, then HPF / comp / EQ, armed and monitoring.")
+                    .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+            }
+            .padding(8)
+            Divider()
+            AudioView()
+        }
+    }
 }

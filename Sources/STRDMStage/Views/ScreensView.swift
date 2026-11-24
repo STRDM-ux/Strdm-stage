@@ -27,6 +27,10 @@ struct ScreensView: View {
                 QuickSendPanel()
             }
 
+            Section("Crowd Phones — the audience is the light show") {
+                CrowdPanel()
+            }
+
             Section("Generated 3D visuals") {
                 VisualsControls()
             }
@@ -312,5 +316,127 @@ struct AutoFitSummary: View {
                 .font(.caption).foregroundStyle(.secondary)
             }
         }
+    }
+}
+
+
+/// Audience phones: join QR, modes, colours, media and text.
+struct CrowdPanel: View {
+    @EnvironmentObject var crowd: CrowdController
+    @EnvironmentObject var remote: RemoteServer
+    @EnvironmentObject var engine: ShowEngine
+    @EnvironmentObject var store: ShowStore
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 16) {
+            VStack(spacing: 6) {
+                if let url = remote.crowdJoinURL, let qr = RemoteServer.qrImage(url) {
+                    Image(nsImage: qr).interpolation(.none).resizable().frame(width: 130, height: 130)
+                    Text(url).font(.caption2.monospaced()).textSelection(.enabled)
+                } else {
+                    Text("Turn on the phone remote server in Control & Log.").font(.caption)
+                }
+                Label("\(crowd.phones) phones connected", systemImage: "iphone.radiowaves.left.and.right")
+                    .font(.caption.weight(.semibold)).foregroundStyle(crowd.phones > 0 ? .green : .secondary)
+                Button("Show join QR on all screens") { showQROnScreens() }.controlSize(.small)
+                Toggle("STRDM Live Cloud", isOn: $crowd.cloudEnabled).toggleStyle(.switch).controlSize(.small)
+                    .help("Phones join over the internet (any Wi-Fi or 4G/5G) — no venue network needed")
+                if crowd.cloudEnabled {
+                    Text("Show code \(crowd.room)").font(.caption.monospaced().weight(.bold))
+                    Text(crowd.cloudStatus).font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    Button("New show code") { crowd.newRoom() }.controlSize(.mini)
+                }
+            }
+            .frame(width: 200)
+            VStack(alignment: .leading, spacing: 10) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 120))], spacing: 6) {
+                    ForEach(CrowdMode.allCases) { m in
+                        Button { crowd.mode = m } label: {
+                            Label(m.label, systemImage: m.symbol).frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(crowd.mode == m ? .pink : nil)
+                        .disabled((m == .image || m == .video) && !crowd.media.contains { $0.kind == (m == .video ? "video" : "image") })
+                    }
+                }
+                HStack {
+                    Text("Colours")
+                    ForEach(crowd.colors.indices, id: \.self) { i in
+                        ColorPicker("", selection: Binding(get: { RGB(hexString: crowd.colors[i])?.color ?? .white },
+                                                           set: { crowd.colors[i] = RGB($0).hex }), supportsOpacity: false)
+                            .labelsHidden()
+                    }
+                    Menu("Palettes") {
+                        ForEach(Palette.library) { p in
+                            Button(p.name) { crowd.colors = [p.a.hex, p.b.hex, p.accent.hex] }
+                        }
+                    }
+                    .fixedSize()
+                }
+                HStack {
+                    Text("Speed"); Slider(value: $crowd.speed, in: 0.25...4)
+                    Text("Brightness"); Slider(value: $crowd.brightness, in: 0.1...1)
+                }
+                HStack {
+                    TextField("Text on every phone (e.g. ARMANII, WIKID CITY, PUT YOUR LIGHTS UP)", text: $crowd.text)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Show text") { crowd.mode = .text }.disabled(crowd.text.isEmpty)
+                }
+                HStack {
+                    Button {
+                        for u in pickFiles(MediaSupport.imageTypes + MediaSupport.videoTypes, multiple: true) { crowd.addMedia(from: u) }
+                    } label: { Label("Add images / videos…", systemImage: "plus") }
+                    ScrollView(.horizontal) {
+                        HStack {
+                            ForEach(crowd.media) { m in
+                                Button { crowd.show(m) } label: {
+                                    Label(m.name, systemImage: m.kind == "video" ? "film" : "photo")
+                                }
+                                .buttonStyle(.bordered)
+                                .tint(crowd.currentMediaID == m.id && (crowd.mode == .image || crowd.mode == .video) ? .pink : nil)
+                                .contextMenu { Button("Remove", role: .destructive) { crowd.removeMedia(m.id) } }
+                            }
+                        }
+                    }
+                }
+                Text("Audience scans the QR on the venue Wi-Fi. Phones render colours and effects locally on a shared beat clock; “Follow the lights” mirrors the rig. Videos play muted. Also controllable from the STRDM Live app.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func showQROnScreens() {
+        guard let url = remote.crowdJoinURL, let qr = RemoteServer.qrImage(url) else { return }
+        let size = NSSize(width: 1920, height: 1080)
+        let artist = store.show.venue.artist
+        let img = NSImage(size: size, flipped: false) { rect in
+            NSColor.black.setFill(); rect.fill()
+            NSGradient(colors: [NSColor(red: 0.35, green: 0, blue: 0.3, alpha: 1), .black])?
+                .draw(fromCenter: NSPoint(x: rect.midX, y: rect.midY), radius: 0, toCenter: NSPoint(x: rect.midX, y: rect.midY), radius: 1100, options: [])
+            NSGraphicsContext.current?.imageInterpolation = .none
+            let q: CGFloat = 640
+            NSColor.white.setFill()
+            NSRect(x: 160, y: (rect.height - q) / 2 - 20, width: q + 40, height: q + 40).fill()
+            qr.draw(in: NSRect(x: 180, y: (rect.height - q) / 2, width: q, height: q))
+            let style = NSMutableParagraphStyle(); style.alignment = .left
+            let big: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 110, weight: .black), .foregroundColor: NSColor.white, .paragraphStyle: style]
+            let mid: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 52, weight: .bold),
+                                                      .foregroundColor: NSColor(red: 1, green: 0.3, blue: 0.7, alpha: 1), .paragraphStyle: style]
+            let small: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 36, weight: .semibold), .foregroundColor: NSColor(white: 0.8, alpha: 1), .paragraphStyle: style]
+            ("SCAN TO\nJOIN THE\nLIGHT SHOW" as NSString).draw(in: NSRect(x: 940, y: 420, width: 940, height: 400), withAttributes: big)
+            ((artist.isEmpty ? "STRDM LIVE" : "\(artist.uppercased()) · STRDM LIVE") as NSString).draw(in: NSRect(x: 940, y: 330, width: 940, height: 70), withAttributes: mid)
+            ("Join the venue Wi-Fi, scan, tap Join and turn brightness up" as NSString).draw(in: NSRect(x: 940, y: 250, width: 940, height: 60), withAttributes: small)
+            return true
+        }
+        guard let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else { return }
+        let file = CrowdController.mediaFolder.appendingPathComponent("join-qr.png")
+        try? png.write(to: file)
+        var cue = Cue(kind: .video, number: "QR", name: "Crowd join QR")
+        cue.videoPath = file.path
+        cue.allScreens = true
+        cue.fitMode = .auto
+        cue.videoFade = 1
+        _ = engine.fireAdHoc(cue)
     }
 }
