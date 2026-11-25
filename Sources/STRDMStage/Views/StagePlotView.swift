@@ -41,6 +41,8 @@ struct StagePlotView: View {
     @State private var snap: Double = 0.25
     @State private var showRig = false
     @State private var showSet = false
+    @State private var showFestival = false
+    @State private var screenStatus: String?
     @State private var pitchStatus: String?
     @EnvironmentObject var crowdCtl: CrowdController
 
@@ -68,6 +70,14 @@ struct StagePlotView: View {
                     .tint(.purple).buttonStyle(.borderedProminent)
                     .disabled(crew.running != nil)
                     .help("The AI Creative Director designs and lays out the whole stage (needs the API key in AI Crew)")
+                Button { showFestival = true } label: { Label("Festival Stage…", systemImage: "sparkles") }
+                    .tint(.pink).buttonStyle(.borderedProminent)
+                    .help("Design a themed festival mega-stage: sculpted 3D scenery, LED wings, artist riser, trusses and PA")
+                Button {
+                    history.push(store.show.stagePlot)
+                    screenStatus = ScreenRigger.install(store: store)
+                } label: { Label("Auto Rig Screens", systemImage: "rectangle.3.group.fill") }
+                    .help(screenStatus ?? "Lay out LED walls to fit this stage design: main wall, wings between the scenery or side walls, riser fascias and IMAG — with panels fitted and screen outputs added")
                 Button { showSet = true } label: { Label("Stage Set Builder…", systemImage: "person.3.sequence.fill") }
                     .help("Auto lay out the artist, hype, dancers, band, DJ and backline")
                 Button { showRig = true } label: { Label("Light This Stage…", systemImage: "wand.and.rays") }
@@ -122,6 +132,15 @@ struct StagePlotView: View {
         }
         .sheet(isPresented: $showRig) { AutoRigSheet() }
         .sheet(isPresented: $showSet) { StageSetSheet() }
+        .sheet(isPresented: $showFestival, onDismiss: { selection = [] }) { FestivalStageSheet(onWillApply: { history.push(store.show.stagePlot) }) }
+        .overlay(alignment: .bottom) {
+            if let screenStatus {
+                Label(screenStatus, systemImage: "checkmark.circle.fill")
+                    .font(.callout).padding(.horizontal, 14).padding(.vertical, 8)
+                    .background(Capsule().fill(.black.opacity(0.8))).foregroundStyle(.green).padding(.bottom, 14)
+                    .task(id: screenStatus) { try? await Task.sleep(nanoseconds: 6_000_000_000); self.screenStatus = nil }
+            }
+        }
     }
 }
 
@@ -488,6 +507,11 @@ private struct StageItemView: View {
                     .stroke(stroke, lineWidth: 1)
             case .scrim:
                 Rectangle().stroke(stroke, style: StrokeStyle(lineWidth: selected ? 2 : 1.2, dash: [4, 3]))
+            case .scenic:
+                // Sculpted scenery: a glowing gem, so it reads differently from flat decks and screens.
+                ScenicPlanShape().fill(LinearGradient(colors: [Color.pink.opacity(printMode ? 0.2 : 0.45), Color.cyan.opacity(printMode ? 0.12 : 0.3)],
+                                                      startPoint: .top, endPoint: .bottom))
+                ScenicPlanShape().stroke(stroke, lineWidth: selected ? 2.5 : 1.4)
             default:
                 if item.kind.isRound {
                     Circle().fill(item.kind.color.opacity(printMode ? 0.15 : 0.28))
@@ -506,7 +530,7 @@ private struct StageItemView: View {
                         .font(.system(size: max(8, min(12, w / 7)), weight: .semibold))
                         .lineLimit(2)
                         .multilineTextAlignment(.center)
-                    if item.kind.isRigging || item.kind.isDeck {
+                    if item.kind.isRigging || item.kind.isDeck || item.kind == .scenic {
                         Text(String(format: "%.1f m", item.topHeight)).font(.system(size: 8)).opacity(0.7)
                     }
                 }
@@ -606,7 +630,7 @@ private struct StageItemInspector: View {
                     LabeledContent(item.wrappedValue.kind.isRigging ? "Trim height (m)" : "Height (m)") {
                         HStack {
                             Slider(value: Binding(get: { item.wrappedValue.topHeight }, set: { item.wrappedValue.height = ($0 * 10).rounded() / 10 }),
-                                   in: 0...(item.wrappedValue.kind.isRigging ? 18 : 8))
+                                   in: 0...(item.wrappedValue.kind == .scenic ? 40 : (item.wrappedValue.kind.isRigging ? 18 : 8)))
                             Text(String(format: "%.1f", item.wrappedValue.topHeight)).frame(width: 34)
                         }
                     }
@@ -622,6 +646,20 @@ private struct StageItemInspector: View {
                 }
                 if item.wrappedValue.kind == .ledWall || item.wrappedValue.kind == .ledFloor {
                     LEDWallInspector(item: item)
+                }
+                if item.wrappedValue.kind == .scenic {
+                    Section("Scenic piece") {
+                        Picker("Sculpture", selection: Binding(get: { item.wrappedValue.scenicStyle },
+                                                              set: { item.wrappedValue.scenic = $0.rawValue; item.wrappedValue.label = $0.label })) {
+                            ForEach(ScenicStyle.allCases) { Text($0.label).tag($0) }
+                        }
+                        Picker("World (all pieces)", selection: Binding(get: { FestivalTheme.named(store.show.stagePlot.festivalTheme).id },
+                                                                        set: { store.show.stagePlot.festivalTheme = $0 })) {
+                            ForEach(FestivalTheme.all) { Text($0.name).tag($0.id) }
+                        }
+                        Text("Off the deck it stands on the ground; height is measured from its base. LED tape follows the song's colours in the live view.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
                 }
                 Section {
                     TextField("Notes", text: item.notes, axis: .vertical).lineLimit(2...4)
@@ -1024,5 +1062,25 @@ private struct RiderEngineeringPage: View {
         }
         .padding(36)
         .foregroundStyle(.black)
+    }
+}
+
+
+/// Plan-view outline for scenic pieces (a faceted gem).
+struct ScenicPlanShape: Shape {
+    func path(in r: CGRect) -> Path {
+        var p = Path()
+        let c = min(r.width, r.height) * 0.28
+        p.move(to: CGPoint(x: r.minX + c, y: r.minY))
+        p.addLine(to: CGPoint(x: r.maxX - c, y: r.minY))
+        p.addLine(to: CGPoint(x: r.maxX, y: r.minY + c))
+        p.addLine(to: CGPoint(x: r.maxX, y: r.maxY - c))
+        p.addLine(to: CGPoint(x: r.maxX - c, y: r.maxY))
+        p.addLine(to: CGPoint(x: r.minX + c, y: r.maxY))
+        p.addLine(to: CGPoint(x: r.minX, y: r.maxY - c))
+        p.addLine(to: CGPoint(x: r.minX, y: r.minY + c))
+        p.closeSubpath()
+        p.move(to: CGPoint(x: r.midX, y: r.minY)); p.addLine(to: CGPoint(x: r.midX, y: r.maxY))
+        return p
     }
 }

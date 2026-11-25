@@ -20,7 +20,11 @@ enum AutoShowDirector {
     struct Plan {
         var songs: [URL] = []
         var lineup = Lineup()
-        var template: String? = nil          // nil = keep my stage design
+        var template: String? = nil          // nil = keep my stage design; "Festival · <theme>" = themed mega-stage
+        var festivalScale: FestivalScale = .main
+        var rigScreens = true
+        var tuneSound = true
+        var studioMix = false
         var layoutStage = true
         var writeInputs = true
         var rig: RigPlan = .build
@@ -32,11 +36,22 @@ enum AutoShowDirector {
         var city = ""
     }
 
-    // ── Stage + rig (instant)
-    static func buildStage(_ plan: Plan, store: ShowStore, lighting: LightingEngine) -> [String] {
+    static let festivalPrefix = "Festival · "
+    static func festivalTheme(_ template: String?) -> FestivalTheme? {
+        guard let t = template, t.hasPrefix(festivalPrefix) else { return nil }
+        let name = String(t.dropFirst(festivalPrefix.count))
+        return FestivalTheme.all.first { $0.name == name }
+    }
+
+    /// The stage this plan would build (also used for the preview).
+    static func stagePlot(_ plan: Plan, from current: StagePlot) -> (plot: StagePlot, log: [String]) {
         var log: [String] = []
-        var plot = store.show.stagePlot
-        if let name = plan.template, let t = StageTemplates.all.first(where: { $0.name == name }) {
+        var plot = current
+        let festival = festivalTheme(plan.template)
+        if let theme = festival {
+            plot = FestivalStageBuilder.build(plot, theme: theme, scale: plan.festivalScale)
+            log.append("Stage design: \(theme.name) festival stage, \(fmt(plot.stageWidth)) × \(fmt(plot.stageDepth)) m, scenery to \(fmt(plan.festivalScale.peak)) m")
+        } else if let name = plan.template, let t = StageTemplates.all.first(where: { $0.name == name }) {
             // Template structure, sized to my stage.
             plot = StageTemplate(name: t.name, width: plot.stageWidth, depth: plot.stageDepth, build: t.build).apply(plot)
             log.append("Stage design: \(t.name) at \(fmt(plot.stageWidth)) × \(fmt(plot.stageDepth)) m")
@@ -46,8 +61,37 @@ enum AutoShowDirector {
             plot = r.plot
             log.append("Stage set: placed \(plan.lineup.headcount) people and \(r.placed) items")
             log += r.notes
+            // Festival sets: the DJ plays from the raised artist riser.
+            if festival != nil, let riser = plot.items.first(where: { $0.label == "Artist riser" }),
+               let i = plot.items.firstIndex(where: { $0.kind == .djBooth }) {
+                plot.items[i].x = riser.x; plot.items[i].y = riser.y; plot.items[i].elevation = riser.topHeight
+            }
         }
+        if plan.rigScreens {
+            let r = ScreenRigger.rig(plot)
+            plot = r.plot
+            log.append("Screens: " + r.summary)
+        }
+        return (plot, log)
+    }
+
+    /// Master EQ to suit the room, so the show sounds right out of the box.
+    static func tuneSound(_ plan: Plan, store: ShowStore, audio: AudioEngine) -> [String] {
+        guard plan.tuneSound else { return [] }
+        let w = store.show.stagePlot.stageWidth
+        let preset = festivalTheme(plan.template) != nil || w >= 16 ? "Festival / Outdoor" : (w < 9 ? "Small Room (tame bass)" : "Dancehall Club")
+        audio.setEQPreset(preset)
+        return ["Sound: master EQ set to “\(preset)”"]
+    }
+
+    // ── Stage + rig (instant)
+    static func buildStage(_ plan: Plan, store: ShowStore, lighting: LightingEngine) -> [String] {
+        let built = stagePlot(plan, from: store.show.stagePlot)
+        var log = built.log
+        let plot = built.plot
         store.show.stagePlot = plot
+        if plan.rigScreens { ScreenRigger.ensureOutputs(for: plot, store: store) }
+        if festivalTheme(plan.template) != nil, Viewer3DSettings.shared.crowdSize != .stadium { Viewer3DSettings.shared.crowdSize = .festival }
         store.show.lineup = plan.lineup
         if plan.writeInputs {
             store.show.inputList = StageSetBuilder.inputList(for: plan.lineup)
@@ -321,6 +365,8 @@ struct AutoShowSheet: View {
     @EnvironmentObject var builder: LightSetBuilder
     @EnvironmentObject var lighting: LightingEngine
     @EnvironmentObject var engine: ShowEngine
+    @EnvironmentObject var audio: AudioEngine
+    @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
     @State private var plan = AutoShowDirector.Plan()
     @State private var step = 0          // 0 songs, 1 stage, 2 show, 3 building/done
@@ -430,9 +476,20 @@ struct AutoShowSheet: View {
                     Picker("Structure", selection: $plan.template) {
                         Text("Keep my stage design").tag(String?.none)
                         ForEach(StageTemplates.all, id: \.name) { Text($0.name).tag(Optional($0.name)) }
+                        Divider()
+                        ForEach(FestivalTheme.all) { t in
+                            Text("✨ " + AutoShowDirector.festivalPrefix + t.name).tag(Optional(AutoShowDirector.festivalPrefix + t.name))
+                        }
                     }
-                    Text("Stage size stays \(Int(store.show.stagePlot.stageWidth)) × \(Int(store.show.stagePlot.stageDepth)) m — change it in Stage Plot.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    if AutoShowDirector.festivalTheme(plan.template) != nil {
+                        Picker("Size", selection: $plan.festivalScale) {
+                            ForEach(FestivalScale.allCases) { Text($0.label).tag($0) }
+                        }
+                    } else {
+                        Text("Stage size stays \(Int(store.show.stagePlot.stageWidth)) × \(Int(store.show.stagePlot.stageDepth)) m — change it in Stage Plot.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Toggle("Auto rig LED screens to fit the design", isOn: $plan.rigScreens)
                     Toggle("Auto lay out performers & backline", isOn: $plan.layoutStage)
                     Toggle("Write a matching input list", isOn: $plan.writeInputs)
                 }
@@ -440,6 +497,14 @@ struct AutoShowSheet: View {
                 Section("Lights") {
                     Picker("Rig", selection: $plan.rig) {
                         ForEach(RigPlan.allCases) { Text($0.label).tag($0) }
+                    }
+                }
+                Section("Sound") {
+                    Toggle("Tune the master EQ for this size of stage", isOn: $plan.tuneSound)
+                    Toggle("Build the auto-mix of the set in the Studio", isOn: $plan.studioMix)
+                    if plan.studioMix {
+                        Text("Replaces what's in the Studio with the songs mixed in running order, with transitions.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
             }
@@ -454,11 +519,7 @@ struct AutoShowSheet: View {
     }
 
     private var previewPlot: StagePlot {
-        var plot = store.show.stagePlot
-        if let name = plan.template, let t = StageTemplates.all.first(where: { $0.name == name }) {
-            plot = StageTemplate(name: t.name, width: plot.stageWidth, depth: plot.stageDepth, build: t.build).apply(plot)
-        }
-        return plan.layoutStage ? StageSetBuilder.layout(plot, lineup: plan.lineup).plot : plot
+        AutoShowDirector.stagePlot(plan, from: store.show.stagePlot).plot
     }
 
     private var showStep: some View {
@@ -520,6 +581,7 @@ struct AutoShowSheet: View {
         step = 3
         running = true
         log = AutoShowDirector.buildStage(plan, store: store, lighting: lighting)
+        log += AutoShowDirector.tuneSound(plan, store: store, audio: audio)
         let plan = self.plan
         Task {
             let shows = await builder.runBatch(plan.songs, vibe: plan.vibe, paletteName: plan.palette).compactMap { $0 }
@@ -527,6 +589,10 @@ struct AutoShowSheet: View {
             log += AutoShowDirector.buildCues(plan, shows: shows, store: store, builder: builder)
             if store.show.cues.indices.contains(start) { engine.standbyIndex = start }
             if let first = shows.first { builder.selectedShowID = first.id }
+            if plan.studioMix && !shows.isEmpty {
+                model.sendCuesToStudio([])
+                log.append("Studio: set auto-mixed with transitions — open Studio & Vocals to fine-tune")
+            }
             running = false
         }
     }
