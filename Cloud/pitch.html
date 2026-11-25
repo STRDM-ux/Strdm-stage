@@ -75,6 +75,16 @@ for (const it of d.items) {
     const m = new THREE.Mesh(new THREE.PlaneGeometry(it.width, it.depth), new THREE.MeshBasicMaterial({ map: ledTexture(it.width, it.depth) }));
     m.rotation.x = -Math.PI / 2; m.position.set(x, H + 0.02, z); scene.add(m); continue;
   }
+  if (it.kind === "scenic") {
+    const off = it.x < 0 || it.x > W || it.y < 0 || it.y > D, b0 = off ? 0 : H;
+    const r = Math.max(0.6, Math.min(it.width, it.depth * 1.6) / 2), col = pal[(d.items.indexOf(it)) % pal.length];
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.55, r, h * 0.7, 8), new THREE.MeshStandardMaterial({ color: 0x3a3350, roughness: 0.7, emissive: col, emissiveIntensity: 0.12 }));
+    body.position.set(x, b0 + h * 0.35, z); scene.add(body);
+    const tip = new THREE.Mesh(new THREE.ConeGeometry(r * 0.6, h * 0.3, 8), new THREE.MeshBasicMaterial({ color: col }));
+    tip.position.set(x, b0 + h * 0.85, z); scene.add(tip);
+    const band = new THREE.Mesh(new THREE.TorusGeometry(r * 0.8, 0.08, 6, 20), new THREE.MeshBasicMaterial({ color: col }));
+    band.rotation.x = Math.PI / 2; band.position.set(x, b0 + h * 0.4, z); scene.add(band); continue;
+  }
   if (it.kind === "label" || it.kind === "powerDrop" || it.kind === "diBox" || it.kind === "vocalMic" || it.kind === "iem") continue;
   const m = new THREE.Mesh(new THREE.BoxGeometry(Math.max(0.1, it.width), h, Math.max(0.1, it.depth)),
                            new THREE.MeshStandardMaterial({ color: kindColor[it.kind] ?? 0x2a2a33, roughness: 0.6 }));

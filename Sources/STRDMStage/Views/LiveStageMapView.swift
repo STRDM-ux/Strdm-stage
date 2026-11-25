@@ -216,13 +216,22 @@ private struct StageMapCanvas: View {
                     let xs = store.show.stagePlot.items.flatMap { [$0.x - $0.width / 2, w - ($0.x + $0.width / 2)] }
                     geometry.front = max(2.5, -(ys.min() ?? 0) + 1)
                     geometry.marginX = max(1, -(xs.min() ?? 0) + 0.5)
+                    let backs = store.show.stagePlot.items.map { $0.y + max($0.width, $0.depth) / 2 }
+                    geometry.back = max(1, (backs.max() ?? d) - d + 0.5)
                 }()
                 let beams = snapshot()
                 let props = store.show.stagePlot.items.filter { $0.kind != .person && $0.kind != .vocalMic }
+                let theme = FestivalTheme.named(store.show.stagePlot.festivalTheme)
+                let glow: (a: RGB, b: RGB, pulse: Double) = {
+                    let pal = lighting.songRun.map { Palette.named($0.show.paletteName) }
+                    let ph = (lighting.songBeatNow ?? Date().timeIntervalSinceReferenceDate * 0.5).truncatingRemainder(dividingBy: 1)
+                    return (pal?.a ?? theme.glowA, pal?.b ?? theme.glowB, lighting.blackout ? 0.05 : 0.55 + 0.45 * pow(1 - ph, 2))
+                }()
                 let fx = effectSnapshot(w: w, d: d)
                 ZStack(alignment: .topLeading) {
                     Canvas { ctx, _ in
                         Self.drawStage(&ctx, geometry, props)
+                        Self.drawScenery(&ctx, geometry, props, glow.a, glow.b, glow.pulse)
                         Self.drawBeams(&ctx, geometry, beams)
                         Self.drawEffects(&ctx, geometry, fx)
                     }
@@ -401,7 +410,7 @@ private struct StageMapCanvas: View {
             truss.addLine(to: g.point(CGPoint(x: item.x + dx, y: item.y + dy)))
             ctx.stroke(truss, with: .color(.gray.opacity(0.5)), style: StrokeStyle(lineWidth: 4, dash: [5, 3]))
         }
-        for item in props where item.kind != .truss {
+        for item in props where item.kind != .truss && item.kind != .scenic {
             let r = g.rect(x: item.x - item.width / 2, y: item.y - item.depth / 2, width: item.width, depth: item.depth)
             ctx.stroke(Path(roundedRect: r, cornerRadius: 3), with: .color(item.kind.color.opacity(0.45)), lineWidth: 1)
             ctx.draw(Text(item.label).font(.system(size: 9)).foregroundColor(.white.opacity(0.45)),
@@ -409,6 +418,37 @@ private struct StageMapCanvas: View {
         }
         ctx.draw(Text("▼  AUDIENCE  ▼").font(.caption.weight(.bold)).foregroundColor(.white.opacity(0.4)),
                  at: g.point(CGPoint(x: g.stageWidth / 2, y: -1.9)))
+    }
+
+    /// Festival scenery and LED walls from above: glowing footprints in the live colours, pulsing with the beat.
+    nonisolated private static func drawScenery(_ ctx: inout GraphicsContext, _ g: MapGeometry, _ props: [StageItem],
+                                                _ a: RGB, _ b: RGB, _ pulse: Double) {
+        guard props.contains(where: { $0.kind == .scenic }) else { return }
+        var lit = ctx
+        lit.blendMode = .plusLighter
+        for (i, item) in props.enumerated() where item.kind == .scenic || item.kind == .ledWall {
+            let c = g.point(CGPoint(x: item.x, y: item.y))
+            let col = (i % 2 == 0 ? a : b).color
+            let hw = item.width * g.scale / 2, hd = max(item.depth, item.kind == .ledWall ? 0.5 : 1) * g.scale / 2
+            var layer = lit
+            layer.translateBy(x: c.x, y: c.y)
+            layer.rotate(by: .degrees(item.rotation))
+            if item.kind == .ledWall {
+                layer.fill(Path(roundedRect: CGRect(x: -hw, y: -hd, width: hw * 2, height: hd * 2), cornerRadius: 2), with: .color(col.opacity(0.75 * pulse)))
+                continue
+            }
+            // Taller pieces throw a bigger glow.
+            let halo = max(hw, hd) * (1.3 + min(1.2, item.topHeight / 25))
+            layer.fill(Path(ellipseIn: CGRect(x: -halo, y: -halo, width: halo * 2, height: halo * 2)),
+                       with: .radialGradient(Gradient(colors: [col.opacity(0.42 * pulse), col.opacity(0.1 * pulse), .clear]),
+                                             center: .zero, startRadius: 0, endRadius: halo))
+            var gem = Path()
+            gem.move(to: CGPoint(x: 0, y: -hd)); gem.addLine(to: CGPoint(x: hw, y: 0))
+            gem.addLine(to: CGPoint(x: 0, y: hd)); gem.addLine(to: CGPoint(x: -hw, y: 0)); gem.closeSubpath()
+            layer.fill(gem, with: .color(col.opacity(0.35 + 0.3 * pulse)))
+            layer.stroke(gem, with: .color(.white.opacity(0.7)), lineWidth: 1)
+            layer.stroke(Path(ellipseIn: CGRect(x: -hw * 0.3, y: -hw * 0.3, width: hw * 0.6, height: hw * 0.6)), with: .color(.white.opacity(0.5 * pulse)), lineWidth: 1)
+        }
     }
 
     nonisolated private static func drawBeams(_ ctx: inout GraphicsContext, _ g: MapGeometry, _ beams: [BeamSnapshot]) {

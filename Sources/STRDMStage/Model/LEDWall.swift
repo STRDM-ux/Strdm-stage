@@ -235,7 +235,7 @@ enum PitchPublisher {
             "width": p.stageWidth, "depth": p.stageDepth, "deck": p.deck, "colors": colors,
             "items": p.items.map { it -> [String: Any] in
                 ["kind": it.kind.rawValue, "label": it.label, "x": it.x, "y": it.y, "width": it.width, "depth": it.depth,
-                 "height": it.topHeight, "elevation": it.elevation ?? 0, "rotation": it.rotation]
+                 "height": it.topHeight, "elevation": it.elevation ?? 0, "rotation": it.rotation, "scenic": it.scenic ?? ""]
             },
             "fixtures": show.lighting.fixtures.compactMap { f -> [String: Any]? in
                 guard let x = f.stageX, let y = f.stageY else { return nil }

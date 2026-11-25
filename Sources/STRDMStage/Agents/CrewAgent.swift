@@ -240,6 +240,10 @@ enum CrewTools {
                "move": ["type": "array", "items": ["type": "object", "properties": [
                     "label": str, "x": num, "y": num, "width": num, "depth": num, "height": num, "elevation": num, "rotation": num],
                     "required": ["label"]]]]),
+            t("build_festival_stage", "Build a themed festival mega-stage (sculpted 3D scenery sweeping round the stage, LED wings, raised artist riser, trusses, PA, IMAG) and hang a rig on it. Themes: \(FestivalTheme.all.map { "\($0.id) (\($0.blurb))" }.joined(separator: "; ")). Run layout_stage afterwards if the lineup needs placing.",
+              ["theme": ["type": "string", "enum": FestivalTheme.all.map(\.id)], "scale": ["type": "string", "enum": FestivalScale.allCases.map(\.rawValue)],
+               "rig": ["type": "boolean", "description": "design a new lighting rig to fit (default true)"]], required: ["theme"]),
+            t("rig_screens", "Auto lay out LED screens to fit the current stage design (main wall, wings or side walls, riser fascias, IMAG), fit LED panels and add screen outputs. Replaces existing LED walls.", [:]),
             t("build_rig", "Design a new lighting rig for the stage, or re-hang the existing fixtures to fit it.",
               ["mode": ["type": "string", "enum": ["new", "rehang"]], "size": ["type": "string", "enum": ["small", "medium", "large"]]], required: ["mode"])
         ]
@@ -345,6 +349,16 @@ enum CrewTools {
             if input["input_list"] as? Bool ?? true { store.show.inputList = StageSetBuilder.inputList(for: l) }
             return Output(result: "Placed \(l.headcount) people, \(r.placed) items. \(r.notes.joined(separator: " "))",
                           summary: "Laid out the stage: \(l.headcount) on stage")
+        case "build_festival_stage":
+            let theme = FestivalTheme.named(input["theme"] as? String)
+            let scale = FestivalScale(rawValue: input["scale"] as? String ?? "") ?? .main
+            FestivalStageBuilder.install(theme: theme, scale: scale, rig: input["rig"] as? Bool ?? true, store: store, lighting: lighting)
+            let p = store.show.stagePlot
+            return Output(result: "Built \(theme.name): \(fmt(p.stageWidth)) × \(fmt(p.stageDepth)) m, \(p.items.filter { $0.kind == .scenic }.count) scenic pieces, \(p.items.filter { $0.kind == .ledWall }.count) LED walls, \(store.show.lighting.fixtures.count) fixtures.",
+                          summary: "Festival stage: \(theme.name) (\(scale.rawValue))")
+        case "rig_screens":
+            let r = ScreenRigger.install(store: store)
+            return Output(result: r, summary: "Screens: " + r)
         case "build_rig":
             let plot = store.show.stagePlot
             if (input["mode"] as? String) == "rehang" {

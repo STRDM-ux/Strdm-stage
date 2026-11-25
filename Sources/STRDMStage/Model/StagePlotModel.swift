@@ -4,12 +4,12 @@ import SwiftUI
 enum StageItemKind: String, Codable, CaseIterable, Identifiable {
     case vocalMic, monitorWedge, iem, drums, drumRiser, bassAmp, guitarAmp, keys, djBooth, playback,
          diBox, powerDrop, sideFill, sub, ledWall, riser, percussion, horns, person, label,
-         truss, trussTower, catwalk, bStage, roundRiser, stairs, ramp, setPiece, scrim, ledFloor, lineArray
+         truss, trussTower, catwalk, bStage, roundRiser, stairs, ramp, setPiece, scrim, ledFloor, lineArray, scenic
     var id: String { rawValue }
 
     /// Palette groups for the stage designer.
     static let structure: [StageItemKind] = [.truss, .trussTower, .riser, .roundRiser, .drumRiser, .catwalk, .bStage,
-                                             .stairs, .ramp, .ledWall, .ledFloor, .scrim, .setPiece, .lineArray]
+                                             .stairs, .ramp, .ledWall, .ledFloor, .scrim, .setPiece, .scenic, .lineArray]
     static let band: [StageItemKind] = [.person, .vocalMic, .drums, .percussion, .keys, .djBooth, .playback, .bassAmp,
                                         .guitarAmp, .horns, .monitorWedge, .sideFill, .sub, .iem, .diBox, .powerDrop, .label]
 
@@ -31,6 +31,7 @@ enum StageItemKind: String, Codable, CaseIterable, Identifiable {
         case .ledWall: return 4.5
         case .scrim: return 5
         case .setPiece: return 2
+        case .scenic: return 10
         case .riser, .drumRiser: return 0.4
         case .roundRiser: return 0.6
         case .catwalk, .bStage: return 0
@@ -73,6 +74,7 @@ enum StageItemKind: String, Codable, CaseIterable, Identifiable {
         case .scrim: return "Scrim / Gauze"
         case .ledFloor: return "LED Floor"
         case .lineArray: return "PA Line Array"
+        case .scenic: return "Scenic Piece"
         }
     }
 
@@ -106,6 +108,7 @@ enum StageItemKind: String, Codable, CaseIterable, Identifiable {
         case .scrim: return "rectangle.dashed"
         case .ledFloor: return "square.grid.4x3.fill"
         case .lineArray: return "speaker.wave.3.fill"
+        case .scenic: return "sparkles"
         }
     }
 
@@ -140,6 +143,7 @@ enum StageItemKind: String, Codable, CaseIterable, Identifiable {
         case .scrim: return CGSize(width: 10, height: 0.1)
         case .ledFloor: return CGSize(width: 6, height: 3)
         case .lineArray: return CGSize(width: 0.8, height: 0.8)
+        case .scenic: return CGSize(width: 3, height: 2.5)
         }
     }
 
@@ -160,6 +164,7 @@ enum StageItemKind: String, Codable, CaseIterable, Identifiable {
         case .scrim: return .cyan
         case .ledFloor: return .blue
         case .lineArray: return .teal
+        case .scenic: return .pink
         }
     }
 }
@@ -182,6 +187,9 @@ struct StageItem: Codable, Identifiable, Equatable, Hashable {
     var locked: Bool? = nil
     /// LED walls: panel type, grid and processor setup (pixel map, power, weight).
     var led: LEDWallSpec? = nil
+    /// Scenic pieces: which sculpture (ScenicStyle raw value).
+    var scenic: String? = nil
+    var scenicStyle: ScenicStyle { ScenicStyle(rawValue: scenic ?? "") ?? .spire }
 
     var topHeight: Double { height ?? kind.defaultHeight }
 }
@@ -197,6 +205,8 @@ struct StagePlot: Codable, Equatable {
     var venueModelPath: String?
     var venueModelScale: Double?
     var venueModelOffsetY: Double?
+    /// Festival world the scenic pieces are painted in (FestivalTheme id). nil = first theme.
+    var festivalTheme: String?
 }
 
 struct InputChannel: Codable, Identifiable, Equatable, Hashable {

@@ -98,6 +98,12 @@ final class Stage3DController: NSObject {
     private var lastDaylight: Bool?
     private var appliedQuality: Viewer3DSettings.Quality?
     private var lastVisualsGrab = 0.0
+    private var scenicMats: ScenicMaterials?
+    private var scenicLights: [SCNLight] = []
+    private var scenicTop = 0.0          // tallest scenic piece (0 = no festival scenery)
+    private var fogScale = 1.0
+    private var lastFireworkBar = -1
+    private var skyApplied: Bool?
     private var visualsRenderer: SCNRenderer?
     private var wallMediaIDs: [Int: ObjectIdentifier] = [:]
     private var visualsFrame: (tick: Int, image: NSImage)?
@@ -212,7 +218,7 @@ final class Stage3DController: NSObject {
             let c = SCNCamera()
             c.fieldOfView = fov
             c.zNear = 0.05
-            c.zFar = 400
+            c.zFar = 900
             c.wantsHDR = settings.quality != .fast
             c.bloomIntensity = mode == .live ? (settings.quality == .fast ? 0 : 1.4) : 0.2
             c.bloomThreshold = 0.55
@@ -226,16 +232,18 @@ final class Stage3DController: NSObject {
             scene.rootNode.addChildNode(n)
             cameras[preset] = n
         }
-        let stageCentre = SCNVector3(0, CGFloat(deckH + 1.2), CGFloat(-d / 2))
-        cam(.foh, SCNVector3(0, 4.2, CGFloat(14 + w * 0.3)), lookAt: stageCentre)
-        cam(.crowd, SCNVector3(-2, 2.4, CGFloat(26 + w * 0.3)), lookAt: stageCentre, fov: 45)
+        // Tall festival scenery: stand further back and look higher so the whole set is in frame.
+        let tall = max(0, scenicTop - 9)
+        let stageCentre = SCNVector3(0, CGFloat(deckH + 1.2 + tall * 0.32), CGFloat(-d / 2))
+        cam(.foh, SCNVector3(0, CGFloat(4.2 + tall * 0.12), CGFloat(14 + w * 0.3 + tall * 1.0)), lookAt: stageCentre, fov: tall > 0 ? 62 : 55)
+        cam(.crowd, SCNVector3(-2, 2.4, CGFloat(26 + w * 0.3 + tall * 1.3)), lookAt: stageCentre, fov: tall > 0 ? 52 : 45)
         cam(.frontRow, SCNVector3(1, 1.7, 3.2), lookAt: SCNVector3(0, CGFloat(deckH + 2.2), CGFloat(-d / 2)), fov: 78)
-        cam(.drone, SCNVector3(CGFloat(w * 0.8), 14, CGFloat(10 + w * 0.4)), lookAt: stageCentre, fov: 55)
+        cam(.drone, SCNVector3(CGFloat(w * 0.8), CGFloat(14 + tall * 0.6), CGFloat(10 + w * 0.4 + tall)), lookAt: stageCentre, fov: 55)
         cam(.artist, SCNVector3(0, CGFloat(deckH + 1.75), CGFloat(-d * 0.35)),
             lookAt: SCNVector3(0, 1.8, 14), fov: 75)
         cam(.top, SCNVector3(0, CGFloat(max(w, d) * 1.6 + 6), CGFloat(-d / 2 + 0.01)),
             lookAt: SCNVector3(0, 0, CGFloat(-d / 2)), fov: 50)
-        cam(.side, SCNVector3(CGFloat(w / 2 + 9), 5, 6), lookAt: stageCentre)
+        cam(.side, SCNVector3(CGFloat(w / 2 + 9 + tall * 0.8), CGFloat(5 + tall * 0.2), CGFloat(6 + tall * 0.9)), lookAt: stageCentre)
         appliedCamera = nil
     }
 
@@ -250,10 +258,10 @@ final class Stage3DController: NSObject {
         guard let store else { return "" }
         let s = store.show
         var parts = ["\(s.stagePlot.stageWidth)x\(s.stagePlot.stageDepth)x\(s.stagePlot.deck)"]
-        parts += s.stagePlot.items.map { "\($0.id)\($0.kind.rawValue)\($0.x),\($0.y),\($0.width),\($0.depth),\($0.rotation),\($0.label),\($0.height ?? -1),\($0.elevation ?? 0)" }
+        parts += s.stagePlot.items.map { "\($0.id)\($0.kind.rawValue)\($0.x),\($0.y),\($0.width),\($0.depth),\($0.rotation),\($0.label),\($0.height ?? -1),\($0.elevation ?? 0)\($0.scenic ?? "")" }
         parts.append("\(s.stagePlot.venueModelPath ?? "")\(s.stagePlot.venueModelScale ?? 1)\(s.stagePlot.venueModelOffsetY ?? 0)")
         parts += s.lighting.fixtures.map { "\($0.id)\($0.profile.name)\($0.stageX ?? -99),\($0.stageY ?? -99),\($0.stageZ ?? -99)" }
-        parts.append("\(settings.crowdSize.rawValue)\(settings.roof)\(settings.quality.rawValue)")
+        parts.append("\(settings.crowdSize.rawValue)\(settings.roof)\(settings.quality.rawValue)\(s.stagePlot.festivalTheme ?? "")")
         return parts.joined(separator: "|")
     }
 
@@ -276,12 +284,18 @@ final class Stage3DController: NSObject {
         let w = store.show.stagePlot.stageWidth
         let d = store.show.stagePlot.stageDepth
         let deck = deckH
+        let scenicItems = store.show.stagePlot.items.filter { $0.kind == .scenic }
+        scenicTop = scenicItems.map(\.topHeight).max() ?? 0
+        scenicMats = scenicItems.isEmpty ? nil : ScenicMaterials(theme: FestivalTheme.named(store.show.stagePlot.festivalTheme))
+        scenicLights = []
+        // Big stages are viewed from further away: push the haze back so the set doesn't vanish.
+        fogScale = max(1, (w + max(0, scenicTop - 8) * 1.5) / 18)
 
         // Haze / atmosphere
         if mode == .live {
             scene.fogColor = NSColor(white: 0.02, alpha: 1)
-            scene.fogStartDistance = 10
-            scene.fogEndDistance = 70
+            scene.fogStartDistance = CGFloat(10 * fogScale)
+            scene.fogEndDistance = CGFloat(70 * fogScale)
         } else {
             scene.fogEndDistance = 0
         }
@@ -347,16 +361,37 @@ final class Stage3DController: NSObject {
             }
         }
 
-        if settings.roof { buildRoof(width: w, depth: d, height: trussHeight + 2.2) }
+        // Open-air festival sets have no roof (the scenery is taller than it).
+        if settings.roof && scenicItems.isEmpty { buildRoof(width: w, depth: d, height: trussHeight + 2.2) }
+
+        // Architectural uplighting on the scenery, in the theme's colours
+        if let mats = scenicMats, settings.quality.fixtureLights {
+            for (i, x) in [-0.32, 0.0, 0.32].enumerated() {
+                let l = SCNLight()
+                l.type = .omni
+                l.color = (i == 1 ? mats.theme.glowB : mats.theme.glowA).nsColor
+                l.intensity = 2600
+                l.attenuationStartDistance = CGFloat(scenicTop * 0.5)
+                l.attenuationEndDistance = CGFloat(scenicTop * 2.2 + w * 0.5)
+                l.categoryBitMask = 1
+                let n = SCNNode(); n.light = l
+                n.position = pt(w / 2 + x * (w + 8), d * 0.55, deck + 2.5, width: w)
+                staticRoot.addChildNode(n)
+                scenicLights.append(l)
+            }
+        }
 
         // Stage-plot gear at real heights
         for item in store.show.stagePlot.items where item.kind != .person && item.kind != .vocalMic {
             if let node = gearNode(item, deck: deck) {
-                let base = item.kind.isFloorDeck || item.kind == .trussTower || item.kind == .lineArray ? 0 : deck + (item.elevation ?? 0)
+                // Scenery outside the deck stands on the ground; on the deck it stands on the stage.
+                let offDeck = item.x < 0 || item.x > w || item.y < 0 || item.y > d
+                let base = item.kind.isFloorDeck || item.kind == .trussTower || item.kind == .lineArray || (item.kind == .scenic && offDeck)
+                    ? 0 : deck + (item.elevation ?? 0)
                 node.position = pt(item.x, item.y, base, width: w)
                 node.eulerAngles.y = CGFloat(-item.rotation * .pi / 180)
                 staticRoot.addChildNode(node)
-                if mode == .plot && item.kind != .label && !item.kind.isRigging {
+                if mode == .plot && item.kind != .label && !item.kind.isRigging && item.kind != .scenic {
                     staticRoot.addChildNode(label(item.label, at: pt(item.x, item.y, base + gearHeight(item) + 0.35, width: w), size: 0.22, color: .white))
                 }
             }
@@ -538,6 +573,10 @@ final class Stage3DController: NSObject {
             n.eulerAngles.x = atan2(h, l)
             n.position = SCNVector3(0, h / 2, 0)
             node.addChildNode(n)
+        case .scenic:
+            let mats = scenicMats ?? ScenicMaterials(theme: FestivalTheme.all[0])
+            return ScenicFactory.node(item.scenicStyle, width: item.width, depth: item.depth, height: gearHeight(item),
+                                      mats: mats, skyBeam: mode == .live && settings.quality != .fast)
         case .setPiece:
             box(w, h, l, material(NSColor(red: 0.2, green: 0.25, blue: 0.3, alpha: 1), metalness: 0.2, roughness: 0.5))
         case .scrim:
@@ -660,6 +699,7 @@ final class Stage3DController: NSObject {
             return p
         }
 
+        let phoneGroups = (0..<groups.count).map { _ in SCNNode() }
         let rows = settings.crowdSize.rows
         for r in 0..<rows {
             let spanX = w + settings.crowdSize.extraWidth + Double(max(0, r - 20)) * 0.6
@@ -678,12 +718,13 @@ final class Stage3DController: NSObject {
                 h.position = SCNVector3(0, CGFloat(1.43 * height + 0.05), 0)
                 person.addChildNode(h)
                 let g = (r + c) % groups.count
+                let pz = z + (rnd() - 0.5) * 0.3
                 if rnd() < 0.22 {   // phones up
                     let p = SCNNode(geometry: phones[g])
-                    p.position = SCNVector3(0.18, CGFloat(1.75 * height), -0.15)
-                    person.addChildNode(p)
+                    p.position = SCNVector3(CGFloat(x) + 0.18, CGFloat(1.75 * height), CGFloat(pz) - 0.15)
+                    phoneGroups[g].addChildNode(p)
                 }
-                person.position = SCNVector3(CGFloat(x), 0, CGFloat(z + (rnd() - 0.5) * 0.3))
+                person.position = SCNVector3(CGFloat(x), 0, CGFloat(pz))
                 groups[g].addChildNode(person)
             }
         }
@@ -694,9 +735,14 @@ final class Stage3DController: NSObject {
             flat.categoryBitMask = 2
             node.removeFromParentNode()
             crowdRoot.addChildNode(flat)
-            var mats = flat.geometry?.materials ?? []
-            flat.enumerateChildNodes { n, _ in mats += n.geometry?.materials ?? [] }
-            if let m = mats.first(where: { $0.name == "phone\(g)" }) { phoneMats.append(m) }
+            // Phones are their own mesh with a material we keep hold of, so their colour can be driven live.
+            if !phoneGroups[g].childNodes.isEmpty, let m = phones[g].firstMaterial {
+                let phoneFlat = phoneGroups[g].flattenedClone()
+                phoneFlat.geometry?.materials = [m]
+                phoneFlat.categoryBitMask = 2
+                flat.addChildNode(phoneFlat)
+                phoneMats.append(m)
+            }
             return flat
         }
     }
@@ -879,14 +925,21 @@ final class Stage3DController: NSObject {
         // Haze thickens the air so beams read
         if mode == .live {
             let air = min(1, haze + settings.haze * 0.6)
-            scene.fogEndDistance = settings.daylight ? 0 : CGFloat(80 - air * 45)
+            scene.fogEndDistance = settings.daylight ? 0 : CGFloat((80 - air * 45) * fogScale)
             scene.fogColor = NSColor(white: 0.02 + air * 0.05, alpha: 1)
         }
         if settings.daylight != lastDaylight {
             lastDaylight = settings.daylight
-            scene.background.contents = settings.daylight ? NSColor(red: 0.55, green: 0.68, blue: 0.85, alpha: 1)
-                                                          : (mode == .live ? NSColor.black : NSColor(white: 0.07, alpha: 1))
+            // Night: a starry sky with a glow on the horizon. Day: clear blue.
+            if settings.daylight {
+                scene.background.contents = NSColor(red: 0.55, green: 0.68, blue: 0.85, alpha: 1)
+            } else if mode == .live {
+                scene.background.contents = ScenicFactory.nightSky
+            } else {
+                scene.background.contents = NSColor(white: 0.07, alpha: 1)
+            }
         }
+        updateScenery(lighting: lighting, width: w, depth: d)
 
         // Crowd phones show what STRDM Live is putting on the audience's phones right now.
         if !phoneMats.isEmpty {
@@ -903,9 +956,9 @@ final class Stage3DController: NSObject {
         }
         if appliedCamera == .drone, let cam = cameras[.drone], view?.pointOfView === cam {
             droneAngle += 0.0025
-            let r = 16 + w * 0.55
-            cam.position = SCNVector3(CGFloat(r * sin(droneAngle + 0.7)), CGFloat(12 + w * 0.15), CGFloat(-d / 2 + r * cos(droneAngle + 0.7)))
-            cam.look(at: SCNVector3(0, CGFloat(deck + 1.5), CGFloat(-d / 2)))
+            let r = 16 + w * 0.55 + scenicTop
+            cam.position = SCNVector3(CGFloat(r * sin(droneAngle + 0.7)), CGFloat(12 + w * 0.15 + scenicTop * 0.5), CGFloat(-d / 2 + r * cos(droneAngle + 0.7)))
+            cam.look(at: SCNVector3(0, CGFloat(deck + 1.5 + scenicTop * 0.3), CGFloat(-d / 2)))
         }
 
         // LED wall shows what the real screen shows: video, still, or the generated visuals.
@@ -942,6 +995,50 @@ final class Stage3DController: NSObject {
             }
         } else {
             crowdGroups.forEach { $0.position = SCNVector3Zero }
+        }
+    }
+
+    /// Festival scenery: LED tape and neon follow the song's palette and pulse on the beat; fireworks on the drops.
+    private func updateScenery(lighting: LightingEngine, width w: Double, depth d: Double) {
+        guard let mats = scenicMats else { return }
+        var a = mats.theme.glowA, b = mats.theme.glowB
+        var pulseA = 1.0, pulseB = 1.0
+        if mode == .live {
+            if let run = lighting.songRun {
+                let pal = Palette.named(run.show.paletteName)
+                a = pal.a; b = pal.b
+            }
+            if let beat = lighting.songBeatNow {
+                let ph = beat.truncatingRemainder(dividingBy: 1)
+                pulseA = 0.55 + 0.45 * pow(1 - ph, 2)
+                let off = (beat + 0.5).truncatingRemainder(dividingBy: 1)
+                pulseB = 0.5 + 0.5 * pow(1 - off, 2)
+                // Fireworks over the set every 8 beats of a drop or chorus
+                let section = lighting.songStatus?.section.lowercased() ?? ""
+                let bar = Int(beat / 8)
+                if bar != lastFireworkBar, settings.quality != .fast, !settings.daylight,
+                   section.hasPrefix("drop") || section.hasPrefix("chorus") {
+                    lastFireworkBar = bar
+                    for k in 0..<3 {
+                        let fx = (Double((bar * 37 + k * 53) % 100) / 100 - 0.5) * (w + 16)
+                        let fy = scenicTop + 8 + Double((bar * 17 + k * 29) % 10)
+                        scene.rootNode.addChildNode(ScenicFactory.firework(at: SCNVector3(CGFloat(fx), CGFloat(fy), CGFloat(-d - 6)),
+                                                                           color: k == 1 ? b : (k == 2 ? .white : a)))
+                    }
+                }
+            } else {
+                let t = Date().timeIntervalSinceReferenceDate
+                pulseA = 0.8 + 0.2 * sin(t * 1.3)
+                pulseB = 0.8 + 0.2 * sin(t * 1.3 + 2)
+            }
+            if lighting.blackout { pulseA = 0.04; pulseB = 0.04 }
+        }
+        mats.glowA.emission.contents = a.scaled(pulseA).nsColor
+        mats.glowB.emission.contents = b.scaled(pulseB).nsColor
+        mats.beam.emission.contents = a.scaled(lighting.blackout ? 0 : 1).nsColor
+        for (i, l) in scenicLights.enumerated() {
+            l.color = (i == 1 ? b : a).nsColor
+            l.intensity = CGFloat(2600 * (i == 1 ? pulseB : pulseA))
         }
     }
 
